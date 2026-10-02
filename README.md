@@ -29,64 +29,29 @@ The touch and entry must occur on separate 1-minute candles. A setup expires at 
 
 ## Schedule Filters
 
-The scheduled strategy selects its SL/TP by the entry candle's IST hour. Hour ranges are start-inclusive and end-exclusive. `AVOID` and unlisted hours do not trade. The weekday exclusions apply in addition to the hour schedule.
+The scheduled strategy selects its SL/TP by the entry candle's IST half-hour slot. Ranges are start-inclusive and end-exclusive. `AVOID` slots do not trade. The listed best weekdays are the only allowed days; the stop-specific exclusions are also applied.
 
-### BUY hour rules
+### BUY Schedule
 
-| IST hour | Rule |
+| Rule | IST windows |
 | --- | --- |
-| 00:00-01:00 | SL 270 / TP 300 |
-| 01:00-02:00 | AVOID |
-| 02:00-03:00 | SL 120 / TP 300 |
-| 03:00-04:00 | SL 270 / TP 300 |
-| 04:00-05:00 | Unlisted, skip |
-| 05:00-06:00 | AVOID |
-| 06:00-07:00 | Unlisted, skip |
-| 07:00-08:00 | SL 270 / TP 300 |
-| 08:00-09:00 | AVOID |
-| 09:00-10:00 | Unlisted, skip |
-| 10:00-11:00 | SL 270 / TP 300 |
-| 11:00-12:00 | SL 70 / TP 300 |
-| 12:00-13:00 | SL 120 / TP 300 |
-| 13:00-15:00 | AVOID |
-| 15:00-16:00 | SL 70 / TP 300 |
-| 16:00-17:00 | Unlisted, skip |
-| 17:00-18:00 | SL 120 / TP 300 |
-| 18:00-19:00 | AVOID |
-| 19:00-20:00 | SL 270 / TP 300 |
-| 20:00-21:00 | SL 120 / TP 300 |
-| 21:00-22:00 | Unlisted, skip |
-| 22:00-23:00 | SL 270 / TP 300 |
-| 23:00-00:00 | SL 120 / TP 300 |
+| SL 70 / TP 300 | 00:30-01:00, 01:30-03:30, 04:00-05:00, 07:00-09:00, 09:30-10:00, 11:30-13:30, 16:00-17:00, 17:30-18:30, 19:00-19:30, 20:30-22:30, 23:00-24:00 |
+| SL 270 / TP 300 | 05:30-07:00, 10:00-11:00, 22:30-23:00 |
+| AVOID | 00:00-00:30, 01:00-01:30, 03:30-04:00, 05:00-05:30, 09:00-09:30, 11:00-11:30, 13:30-16:00, 17:00-17:30, 18:30-19:00, 19:30-20:30 |
 
-BUY Monday is avoided.
+Allowed weekdays: Monday, Tuesday, Thursday, Sunday. Also avoid Saturday for SL 70 and Wednesday for SL 270.
 
-### SELL hour rules
+### SELL Schedule
 
-| IST hour | Rule |
+| Rule | IST windows |
 | --- | --- |
-| 00:00-01:00 | SL 70 / TP 400 |
-| 01:00-03:00 | Unlisted, skip |
-| 03:00-06:00 | AVOID |
-| 06:00-07:00 | SL 70 / TP 800 |
-| 07:00-08:00 | SL 70 / TP 400 |
-| 08:00-09:00 | SL 220 / TP 800 |
-| 09:00-11:00 | Unlisted, skip |
-| 11:00-12:00 | AVOID |
-| 12:00-13:00 | SL 70 / TP 400 |
-| 13:00-14:00 | AVOID |
-| 14:00-15:00 | SL 70 / TP 600 |
-| 15:00-16:00 | Unlisted, skip |
-| 16:00-17:00 | SL 220 / TP 800 |
-| 17:00-18:00 | Unlisted, skip |
-| 18:00-19:00 | SL 70 / TP 800 |
-| 19:00-20:00 | AVOID |
-| 20:00-21:00 | SL 220 / TP 800 |
-| 21:00-22:00 | SL 220 / TP 800 |
-| 22:00-23:00 | SL 70 / TP 400 |
-| 23:00-00:00 | SL 220 / TP 800 |
+| SL 70 / TP 800 | 00:30-01:00, 01:30-02:00, 06:00-06:30, 07:00-07:30, 08:30-09:00, 17:00-17:30, 18:00-19:00, 19:30-20:00 |
+| SL 70 / TP 600 | 03:00-03:30, 04:00-04:30, 05:30-06:00, 09:30-10:00, 11:00-11:30, 12:30-13:00, 16:30-17:00, 19:00-19:30, 23:30-24:00 |
+| SL 70 / TP 400 | 06:30-07:00, 07:30-08:00, 13:00-14:00, 20:00-20:30, 21:00-23:00 |
+| SL 220 / TP 800 | 00:00-00:30, 17:30-18:00 |
+| AVOID | 01:00-01:30, 02:00-03:00, 03:30-04:00, 04:30-05:30, 08:00-08:30, 09:00-09:30, 10:00-11:00, 11:30-12:30, 14:00-16:30, 20:30-21:00, 23:00-23:30 |
 
-SELL Saturday and Sunday are avoided.
+Allowed weekdays: Monday, Wednesday, Sunday. Friday and Saturday are also avoided.
 
 ## Backtest Constraints and Variables
 
@@ -99,10 +64,10 @@ SELL Saturday and Sunday are avoided.
 - An unclosed position at the end of available data is counted as open; it contributes no realized points.
 - P&L is reported in raw price points, before commissions, funding, spread, and slippage.
 - Win rate is wins divided by closed trades. Expectancy is net realized points divided by entries, including any open entry in the denominator.
-- The exploratory grid constants are SL 70 to 370 in 50-point steps and TP 200 to 1,000 in 100-point steps. The specific combo comparison uses BUY 70/300, 120/300, 270/300 and SELL 70/400, 70/600, 70/800, 220/800.
+- The exploratory grid constants are SL 70 to 370 in 50-point steps and TP 200 to 1,000 in 100-point steps. The specific combo comparison uses BUY 70/300 and 270/300, and SELL 70/400, 70/600, 70/800, and 220/800.
 
 ## Output
 
-`Main` continues to print the candidate entries and unfiltered exploratory/combo reports. The scheduled summary and its `dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,expectancy_points` rows are appended to `backtest_schedule.log` in the project root on every run.
+`Main` continues to print candidate entries and unfiltered exploratory/combo reports. Each run appends to `backtest_schedule.log` in the project root, in this order: executed scheduled trades with entry/exit levels and results; the schedule summary; weekday rows; IST half-hour rows (for example `10:00-10:30`); and BUY/SELL requested-combination results with separate return/expectancy ranks and `BEST` markers. The dimension-row schema is `dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,expectancy_points`.
 
 Build with `mvn clean test`, then run with `java -cp target/classes com.template.Main` or launch `com.template.Main` from the IDE.

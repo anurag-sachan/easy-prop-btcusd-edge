@@ -13,7 +13,8 @@ import java.util.stream.Stream;
 
 public class Csvreader{
     private static final Path datewiseFolder = Paths.get(
-            "src/main/java/com/template/binance_csv/datewise_binance_csv");
+            "src/main/java/com/template/binance_csv/datewise_binance_csv_spot");
+            // "src/main/java/com/template/binance_csv/datewise_binance_csv");
 
     public static List<List<String>> read1mCSV() throws IOException{
         return readTimeframeCSV("1m");
@@ -53,7 +54,11 @@ public class Csvreader{
                 while ((line = reader.readLine()) != null) {
                     String[] values = line.split(",");
                     try {
-                        Long.parseLong(values[0]);
+                        long timestamp = Long.parseLong(values[0]);
+                        if (timestamp >= 100_000_000_000_000L) {
+                            timestamp /= 1_000L;
+                            values[0] = Long.toString(timestamp);
+                        }
                         records.add(Arrays.asList(values));
                     } catch (NumberFormatException ignored) {
                         // Skip CSV header rows.

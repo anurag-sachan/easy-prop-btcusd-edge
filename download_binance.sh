@@ -6,9 +6,10 @@ set -u
 # Binance BTCUSDT Spot Kline Downloader
 # macOS-compatible
 #
-# Date range: 2017-08-17 through 2026-10-01 inclusive
+# Date range: 2023-04-25 through 2026-10-01 inclusive
 # Timeframes: 1m, 30m, 1h
 # CSV output: src/main/java/com/template/binance_csv/datewise_binance_csv_spot/YYYY-MM-DD/<timeframe>/
+# Normalized columns: timestamp,open,high,low,close,volume,trades
 # ============================================================
 
 SYMBOL="BTCUSDT"
@@ -31,12 +32,38 @@ UNAVAILABLE_FILE="$OUTPUT_DIR/unavailable_downloads.txt"
 # Requirements
 # ------------------------------------------------------------
 
-for cmd in curl date unzip; do
+for cmd in awk curl date unzip; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "ERROR: '$cmd' is required but not installed."
         exit 1
     fi
 done
+
+normalize_csv() {
+    awk -F, '
+        BEGIN { OFS = "," }
+        NR == 1 {
+            print "timestamp", "open", "high", "low", "close", "volume", "trades"
+            print "open_time", "open", "high", "low", "close", "volume", "count"
+            if ($1 == "timestamp" && NF == 7) {
+                standardized = 1
+                next
+            }
+        }
+        NR == 2 && standardized && $1 == "open_time" { next }
+        $1 ~ /^[0-9]+$/ {
+            timestamp = $1
+            if (length(timestamp) > 13) {
+                timestamp = substr(timestamp, 1, length(timestamp) - 3)
+            }
+            if (NF >= 9) {
+                print timestamp, $2, $3, $4, $5, $6, $9
+            } else if (NF >= 7) {
+                print timestamp, $2, $3, $4, $5, $6, $7
+            }
+        }
+    ' "$1" > "$2"
+}
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -89,6 +116,7 @@ while true; do
         OUTPUT_FILE="$TF_DIR/$CSV_NAME"
         ZIP_FILE="$TF_DIR/$ZIP_NAME"
         CSV_TEMP="$OUTPUT_FILE.tmp"
+        RAW_TEMP="$OUTPUT_FILE.raw.tmp"
 
         echo
         echo "[$TF] $current_date"
@@ -98,8 +126,15 @@ while true; do
         # ----------------------------------------------------
 
         if [[ -s "$OUTPUT_FILE" ]]; then
-            echo "  CSV already exists."
-            EXISTING=$((EXISTING + 1))
+            if normalize_csv "$OUTPUT_FILE" "$CSV_TEMP" && [[ -s "$CSV_TEMP" ]]; then
+                mv "$CSV_TEMP" "$OUTPUT_FILE"
+                echo "  Existing CSV normalized."
+                EXISTING=$((EXISTING + 1))
+            else
+                rm -f "$CSV_TEMP"
+                echo "  ERROR: Could not normalize $OUTPUT_FILE"
+                FAILED=$((FAILED + 1))
+            fi
             continue
         fi
 
@@ -129,17 +164,20 @@ while true; do
             if [[ "$HTTP_CODE" == "200" ]] && \
                unzip -t -q "$ZIP_FILE.tmp" >/dev/null 2>&1; then
                 mv "$ZIP_FILE.tmp" "$ZIP_FILE"
-                if unzip -p "$ZIP_FILE" "$CSV_NAME" > "$CSV_TEMP" && [[ -s "$CSV_TEMP" ]]; then
+                if unzip -p "$ZIP_FILE" "$CSV_NAME" > "$RAW_TEMP" && \
+                   [[ -s "$RAW_TEMP" ]] && \
+                   normalize_csv "$RAW_TEMP" "$CSV_TEMP" && [[ -s "$CSV_TEMP" ]]; then
                     mv "$CSV_TEMP" "$OUTPUT_FILE"
+                    rm -f "$RAW_TEMP"
                     rm -f "$ZIP_FILE"
-                    echo "  OK: $CSV_NAME"
+                    echo "  OK: normalized $CSV_NAME"
                     DOWNLOADED=$((DOWNLOADED + 1))
                     SUCCESS=1
                     break
                 fi
 
-                rm -f "$CSV_TEMP" "$ZIP_FILE"
-                echo "  Archive did not contain a valid CSV."
+                rm -f "$CSV_TEMP" "$RAW_TEMP" "$ZIP_FILE"
+                echo "  Archive did not contain a valid, normalizable CSV."
                 HTTP_CODE="invalid-archive"
                 break
 
