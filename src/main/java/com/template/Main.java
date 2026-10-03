@@ -371,6 +371,12 @@ public class Main {
                 continue;
             }
 
+            if (isRoundNumberFiltered(signal,
+                    scheduled.rule.stopPoints,
+                    scheduled.rule.targetPoints)) {
+                continue;
+            }
+
             entries++;
             Exit exit = findExit(candles, signal,
                     scheduled.rule.stopPoints, scheduled.rule.targetPoints);
@@ -559,6 +565,12 @@ public class Main {
                 continue;
             }
 
+            if (isRoundNumberFiltered(signal,
+                    combination.stopPoints,
+                    combination.targetPoints)) {
+                continue;
+            }
+
             Exit exit = findExit(candles, signal, combination.stopPoints, combination.targetPoints);
             nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
 
@@ -628,6 +640,13 @@ public class Main {
                 continue;
             }
 
+            // Round-number filter:
+            // Skip trade if BOTH SL and target sides contain a multiple of 500.
+            if (isRoundNumberFiltered(signal, stopPoints, targetPoints)) {
+                skipped++;
+                continue;
+            }
+
             entries++;
             Exit exit = findExit(candles, signal, stopPoints, targetPoints);
             if (exit == null) {
@@ -648,6 +667,38 @@ public class Main {
 
         return new Evaluation(mode, stopPoints, targetPoints, entries, wins, losses,
                 openTrades, skipped, netPnlPoints, netR);
+    }
+
+    private static boolean hasRoundNumberBetween(double entryPrice, double exitPrice) {
+        double lower = Math.min(entryPrice, exitPrice);
+        double upper = Math.max(entryPrice, exitPrice);
+
+        // Small epsilon prevents floating-point precision issues.
+        long firstMultiple = (long) Math.ceil((lower - 1e-9) / 500.0);
+        long lastMultiple = (long) Math.floor((upper + 1e-9) / 500.0);
+
+        return firstMultiple <= lastMultiple;
+    }
+
+    private static boolean isRoundNumberFiltered(Signal signal,
+                                                int stopPoints,
+                                                int targetPoints) {
+        double stopPrice = signal.side == Side.LONG
+                ? signal.entryPrice - stopPoints
+                : signal.entryPrice + stopPoints;
+
+        double targetPrice = signal.side == Side.LONG
+                ? signal.entryPrice + targetPoints
+                : signal.entryPrice - targetPoints;
+
+        boolean roundNumberOnStopSide =
+                hasRoundNumberBetween(signal.entryPrice, stopPrice);
+
+        boolean roundNumberOnTargetSide =
+                hasRoundNumberBetween(signal.entryPrice, targetPrice);
+
+        // Avoid only when BOTH sides contain a round number.
+        return roundNumberOnStopSide && roundNumberOnTargetSide;
     }
 
     private static Exit findExit(List<Candle> candles, Signal signal,
