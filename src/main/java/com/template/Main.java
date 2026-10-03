@@ -14,6 +14,8 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -29,6 +31,10 @@ public class Main {
     private static final int MIN_TARGET_POINTS = 200;
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
+    private static final double DEFAULT_SPREAD_POINTS = 15.0;
+    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 10.0;
+    private static double spreadPoints = DEFAULT_SPREAD_POINTS;
+    private static double commissionPercentOfRisk = DEFAULT_COMMISSION_PERCENT_OF_RISK;
     private static final DateTimeFormatter IST_FORMAT = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm")
             .withZone(ZoneId.of("Asia/Kolkata"));
@@ -106,8 +112,16 @@ public class Main {
                 DayOfWeek.TUESDAY, DayOfWeek.SUNDAY),
             Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY,
                 DayOfWeek.SUNDAY));
+        // Calendar days of the month (IST entry date) on which no trade is taken.
+        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(7);
 
     public static void main(String[] args) throws IOException {
+        parseCostInputs(args);
+        StringBuilder rawLog = new StringBuilder();
+        rawLog.append("RAW PERFORMANCE DATA\n")
+              .append("spread_points=").append(formatPrice(spreadPoints))
+              .append(",commission_percent_of_risk=")
+              .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk)).append("\n\n");
         List<List<String>> candles1h = dataRows(Csvreader.read1hCSV());
         List<List<String>> candles30m = dataRows(Csvreader.read30mCSV());
         List<List<String>> candles1m = dataRows(Csvreader.read1mCSV());
@@ -128,10 +142,105 @@ public class Main {
         }
 
         List<Signal> signals = buildSignals(candles30m, minuteCandles, hourlyOpen);
-        printEntryCandles(signals, minuteCandles);
-        runGridSearch(signals, minuteCandles);
-        runRequestedCombinations(signals, minuteCandles);
-        runScheduledBacktest(signals, minuteCandles);
+        runGridSearch(signals, minuteCandles, rawLog);
+        runRequestedCombinations(signals, minuteCandles, rawLog);
+        runScheduledBacktest(signals, minuteCandles, rawLog);
+        Files.writeString(Path.of("raw_data_performance.log"), rawLog.toString(),
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        writeRulesFile();
+    }
+
+    /**
+     * Writes the live strategy constraints to backtest_rules.txt. It is generated from the same
+     * constants the backtest uses, so it cannot drift from the code, and it is overwritten on every
+     * run. generate_performance_html.py reads it for section A of the dashboard.
+     */
+    private static void writeRulesFile() throws IOException {
+        StringBuilder out = new StringBuilder("BACKTEST RULES (IST)\n");
+        appendScheduleRules(out, "BUY_TIME_RULES", BUY_TIME_RULES);
+        appendScheduleRules(out, "SELL_TIME_RULES", SELL_TIME_RULES);
+
+        out.append("\nBEST_DAYS (side,days...)\n");
+        for (Side side : new Side[] {Side.LONG, Side.SHORT}) {
+            out.append(side);
+            for (DayOfWeek day : DayOfWeek.values()) {
+                if (BEST_DAYS.get(side).contains(day)) out.append(',').append(day);
+            }
+            out.append('\n');
+        }
+
+        // Stop-size / weekday exclusions, evaluated through isExcludedStopDay itself.
+        // "*" means the day is excluded for every stop size used on that side.
+        out.append("\nEXCLUDED_STOP_DAYS (side,stop_points|*,day)\n");
+        for (Side side : new Side[] {Side.LONG, Side.SHORT}) {
+            Map<Integer, ScheduleRule> schedule = side == Side.LONG ? BUY_TIME_RULES : SELL_TIME_RULES;
+            Set<Integer> stops = new TreeSet<>();
+            schedule.values().stream().filter(r -> !r.avoid).forEach(r -> stops.add(r.stopPoints));
+            for (DayOfWeek day : DayOfWeek.values()) {
+                List<Integer> excluded = new ArrayList<>();
+                for (int stop : stops) {
+                    if (isExcludedStopDay(side, new ScheduleRule(false, stop, 0), day)) excluded.add(stop);
+                }
+                if (excluded.isEmpty()) continue;
+                if (excluded.size() == stops.size()) {
+                    out.append(side).append(",*,").append(day).append('\n');
+                } else {
+                    for (int stop : excluded) out.append(side).append(',').append(stop).append(',').append(day).append('\n');
+                }
+            }
+        }
+
+        out.append("\nEXCLUDED_DAYS_OF_MONTH\n")
+           .append(String.join(",", new TreeSet<>(EXCLUDED_DAYS_OF_MONTH).stream().map(String::valueOf).toList()))
+           .append('\n');
+
+        out.append("\nBUY_COMBINATIONS (sl,tp)\n");
+        for (StopTarget c : BUY_COMBINATIONS) out.append(c.stopPoints).append(',').append(c.targetPoints).append('\n');
+        out.append("\nSELL_COMBINATIONS (sl,tp)\n");
+        for (StopTarget c : SELL_COMBINATIONS) out.append(c.stopPoints).append(',').append(c.targetPoints).append('\n');
+
+        out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies on BOTH the stop side and the target side\n");
+        out.append("\nCOSTS\nspread_points=").append(formatPrice(spreadPoints))
+           .append(",commission_percent_of_risk=")
+           .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk)).append('\n');
+
+        Files.writeString(Path.of("backtest_rules.txt"), out.toString(),
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+    }
+
+    /** Emits the 48-slot schedule as merged "start,end,AVOID" or "start,end,sl,tp" ranges. */
+    private static void appendScheduleRules(StringBuilder out, String name, Map<Integer, ScheduleRule> schedule) {
+        out.append('\n').append(name).append(" (start,end,AVOID|sl,tp)\n");
+        int start = 0;
+        for (int slot = 1; slot <= 48; slot++) {
+            if (slot == 48 || !schedule.get(slot).equals(schedule.get(start))) {
+                ScheduleRule rule = schedule.get(start);
+                out.append(slotLabel(start)).append(',').append(slotLabel(slot)).append(',')
+                   .append(rule.avoid ? "AVOID" : rule.stopPoints + "," + rule.targetPoints).append('\n');
+                start = slot;
+            }
+        }
+    }
+
+    private static String slotLabel(int slot) {
+        return slot == 48 ? "24:00" : String.format(Locale.ROOT, "%02d:%02d", slot / 2, (slot % 2) * 30);
+    }
+
+    private static void parseCostInputs(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--spread=")) {
+                spreadPoints = Double.parseDouble(arg.substring("--spread=".length()));
+            } else if (arg.startsWith("--commission=")) {
+                commissionPercentOfRisk = Double.parseDouble(arg.substring("--commission=".length()));
+            }
+        }
+        if (spreadPoints < 0 || commissionPercentOfRisk < 0) {
+            throw new IllegalArgumentException("Spread and commission must be >= 0");
+        }
+    }
+
+    private static double transactionCostPoints(int stopPoints) {
+        return spreadPoints + stopPoints * commissionPercentOfRisk / 100.0;
     }
 
     private static void printEntryCandles(List<Signal> signals, List<Candle> candles) {
@@ -245,7 +354,7 @@ public class Main {
         return -1;
     }
 
-    private static void runGridSearch(List<Signal> signals, List<Candle> candles) {
+    private static void runGridSearch(List<Signal> signals, List<Candle> candles, StringBuilder rawLog) {
         List<Evaluation> longResults = new ArrayList<>();
         List<Evaluation> shortResults = new ArrayList<>();
         List<Evaluation> combinedResults = new ArrayList<>();
@@ -270,17 +379,13 @@ public class Main {
         shortResults.sort(profitabilityOrder);
         combinedResults.sort(profitabilityOrder);
 
-        System.out.println("signals,long=" + countSignals(signals, Side.LONG)
-                + ",short=" + countSignals(signals, Side.SHORT)
-                + ",total=" + signals.size());
-        printResults("LONG", longResults);
-        printResults("SHORT", shortResults);
-        printResults("COMBINED", combinedResults);
-    }
-
-    private static void runRequestedCombinations(List<Signal> signals, List<Candle> candles) {
-        printRequestedSide("BUY", Side.LONG, BUY_COMBINATIONS, signals, candles);
-        printRequestedSide("SELL", Side.SHORT, SELL_COMBINATIONS, signals, candles);
+        rawLog.append("\nGRID SEARCH\n")
+              .append("signals,long=").append(countSignals(signals, Side.LONG))
+              .append(",short=").append(countSignals(signals, Side.SHORT))
+              .append(",total=").append(signals.size()).append("\n");
+        appendResults(rawLog, "LONG", longResults);
+        appendResults(rawLog, "SHORT", shortResults);
+        appendResults(rawLog, "COMBINED", combinedResults);
     }
 
     private static ScheduleRule tradeRule(int stopPoints, int targetPoints) {
@@ -327,7 +432,7 @@ public class Main {
         return day == DayOfWeek.FRIDAY || day == DayOfWeek.SATURDAY;
     }
 
-        private static void runScheduledBacktest(List<Signal> signals, List<Candle> candles)
+        private static void runScheduledBacktest(List<Signal> signals, List<Candle> candles, StringBuilder rawLog)
             throws IOException {
         List<ScheduledSignal> scheduledSignals = new ArrayList<>();
         int avoidedByHour = 0;
@@ -345,7 +450,8 @@ public class Main {
             } else if (rule.avoid) {
                 avoidedByHour++;
             } else if (!BEST_DAYS.get(signal.side).contains(entryTime.getDayOfWeek())
-                    || isExcludedStopDay(signal.side, rule, entryTime.getDayOfWeek())) {
+                    || isExcludedStopDay(signal.side, rule, entryTime.getDayOfWeek())
+                    || EXCLUDED_DAYS_OF_MONTH.contains(entryTime.getDayOfMonth())) {
                 avoidedByDay++;
             } else {
                 scheduledSignals.add(new ScheduledSignal(signal, rule));
@@ -362,6 +468,7 @@ public class Main {
         double netR = 0;
         Map<DayOfWeek, BucketStats> weekdayStats = new EnumMap<>(DayOfWeek.class);
         Map<Integer, BucketStats> halfHourStats = new TreeMap<>();
+        Map<Integer, BucketStats> dayOfMonthStats = new TreeMap<>();
         List<TakenTrade> takenTrades = new ArrayList<>();
 
         for (ScheduledSignal scheduled : scheduledSignals) {
@@ -398,28 +505,37 @@ public class Main {
             ZonedDateTime entryTime = Instant.ofEpochMilli(
                     candles.get(signal.entryIndex).timestamp).atZone(ZoneId.of("Asia/Kolkata"));
             weekdayStats.computeIfAbsent(entryTime.getDayOfWeek(), ignored -> new BucketStats())
-                    .add(exit);
-                halfHourStats.computeIfAbsent(halfHourBucket(entryTime), ignored -> new BucketStats())
-                    .add(exit);
+                    .add(exit, scheduled.rule.stopPoints);
+            halfHourStats.computeIfAbsent(halfHourBucket(entryTime), ignored -> new BucketStats())
+                    .add(exit, scheduled.rule.stopPoints);
+            dayOfMonthStats.computeIfAbsent(entryTime.getDayOfMonth(), ignored -> new BucketStats())
+                    .add(exit, scheduled.rule.stopPoints);
         }
 
         int closedTrades = wins + losses;
         double winRate = closedTrades == 0 ? 0 : wins * 100.0 / closedTrades;
         double expectancy = entries == 0 ? 0 : netPnlPoints / entries;
+        List<Double> scheduleR = takenTrades.stream()
+                .filter(t -> t.exit != null)
+                .map(t -> t.exit.pnlPoints / t.rule.stopPoints)
+                .toList();
+        double alpha = calculateAlpha(scheduleR, 0.0);
+        double sharpe = calculateSharpeRatio(scheduleR, 0.0);
         String summary = String.format(Locale.ROOT,
-            "signals=%d,eligible_by_schedule=%d,entries=%d,wins=%d,losses=%d,open=%d,skipped_while_open=%d,avoided_by_time=%d,avoided_by_day=%d,unlisted_times=%d,win_rate_pct=%.2f,net_points=%.2f,net_R=%.2f,expectancy_points=%.2f",
+            "signals=%d,eligible_by_schedule=%d,entries=%d,wins=%d,losses=%d,open=%d,skipped_while_open=%d,avoided_by_time=%d,avoided_by_day=%d,unlisted_times=%d,win_rate_pct=%.2f,net_points=%.2f,net_R=%.2f,expectancy_points=%.2f,alpha_R_per_trade=%.4f,sharpe=%.4f,spread_points=%.2f,commission_pct_of_risk=%.4f",
             signals.size(), scheduledSignals.size(), entries, wins, losses, openTrades,
             skippedWhileOpen, avoidedByHour, avoidedByDay, unlistedTimes,
-            winRate, netPnlPoints, netR, expectancy);
-        appendScheduleLog(summary, takenTrades, weekdayStats, halfHourStats,
-            signals, candles);
-        System.out.println("Scheduled strategy summary and dimensions logged to backtest_schedule.log");
+            winRate, netPnlPoints, netR, expectancy, alpha, sharpe, spreadPoints, commissionPercentOfRisk);
+        appendScheduleLog(summary, takenTrades, weekdayStats, halfHourStats, dayOfMonthStats,
+            signals, candles, rawLog);
+        System.out.println("Backtest complete: schedule summary written to backtest_schedule.log; raw performance written to raw_data_performance.log");
     }
 
         private static void appendScheduleLog(String summary, List<TakenTrade> takenTrades,
                          Map<DayOfWeek, BucketStats> weekdayStats,
                          Map<Integer, BucketStats> halfHourStats,
-                         List<Signal> signals, List<Candle> candles)
+                         Map<Integer, BucketStats> dayOfMonthStats,
+                         List<Signal> signals, List<Candle> candles, StringBuilder rawLog)
             throws IOException {
         StringBuilder logEntry = new StringBuilder()
             .append("TRADES TAKEN (IST):\n")
@@ -439,9 +555,7 @@ public class Main {
             String exitTime = trade.exit == null ? ""
                 : formatIst(candles.get(trade.exit.candleIndex).timestamp);
             String exitPrice = trade.exit == null ? ""
-                : formatPrice(signal.side == Side.LONG
-                    ? signal.entryPrice + trade.exit.pnlPoints
-                    : signal.entryPrice - trade.exit.pnlPoints);
+                : formatPrice(trade.exit.win ? targetPrice : stopPrice);
             String result = trade.exit == null ? "OPEN" : trade.exit.win ? "WIN" : "LOSS";
             String pnl = trade.exit == null ? "" : formatPrice(trade.exit.pnlPoints);
             logEntry.append(String.format(Locale.ROOT,
@@ -454,7 +568,7 @@ public class Main {
 
         logEntry.append("\nSCHEDULE-FILTERED STRATEGY (IST):\n")
             .append(summary).append('\n')
-            .append("dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,expectancy_points\n");
+            .append("dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,net_R,expectancy_points,alpha_R_per_trade,sharpe\n");
 
         for (DayOfWeek day : DayOfWeek.values()) {
             BucketStats stats = weekdayStats.get(day);
@@ -466,52 +580,106 @@ public class Main {
             appendCalendarLogRow(logEntry, "half_hour_ist",
                 halfHourLabel(entry.getKey()), entry.getValue());
         }
-        logEntry.append('\n');
-        appendComboAnalysisLog(logEntry, "BUY", Side.LONG,
-            BUY_COMBINATIONS, signals, candles);
-        appendComboAnalysisLog(logEntry, "SELL", Side.SHORT,
-            SELL_COMBINATIONS, signals, candles);
+        for (Map.Entry<Integer, BucketStats> entry : dayOfMonthStats.entrySet()) {
+            appendCalendarLogRow(logEntry, "day_of_month",
+                Integer.toString(entry.getKey()), entry.getValue());
+        }
         logEntry.append('\n');
 
+        appendRawTrades(rawLog, takenTrades, signals, candles);
+        appendRawScheduleAnalysis(rawLog, summary, weekdayStats, halfHourStats, dayOfMonthStats);
         Files.writeString(Path.of("backtest_schedule.log"), logEntry,
             StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         }
 
-        private static void appendComboAnalysisLog(StringBuilder output, String label, Side side,
-                               List<StopTarget> combinations,
-                               List<Signal> signals, List<Candle> candles) {
+        private static void runRequestedCombinations(List<Signal> signals, List<Candle> candles, StringBuilder rawLog) {
+        appendRequestedSide(rawLog, "BUY", Side.LONG, BUY_COMBINATIONS, signals, candles);
+        appendRequestedSide(rawLog, "SELL", Side.SHORT, SELL_COMBINATIONS, signals, candles);
+    }
+
+    private static void appendRequestedSide(StringBuilder output, String label, Side side,
+                                            List<StopTarget> combinations,
+                                            List<Signal> signals, List<Candle> candles) {
         List<Evaluation> results = new ArrayList<>();
         for (StopTarget combination : combinations) {
             results.add(evaluate(signals, candles, side,
-                combination.stopPoints, combination.targetPoints));
+                    combination.stopPoints, combination.targetPoints));
+            appendCalendarAnalysis(output, label, side, combination, signals, candles);
         }
-        List<Evaluation> byReturn = results.stream()
-            .sorted(Comparator.comparingDouble(Evaluation::netPnlPoints).reversed()
-                .thenComparing(Comparator.comparingDouble(
-                    Evaluation::expectancyPoints).reversed()))
-            .toList();
-        List<Evaluation> byExpectancy = results.stream()
-            .sorted(Comparator.comparingDouble(Evaluation::expectancyPoints).reversed()
-                .thenComparing(Comparator.comparingDouble(
-                    Evaluation::netPnlPoints).reversed()))
-            .toList();
 
-        output.append(label).append(" REQUESTED SL/TP COMBINATIONS (unfiltered signals):\n")
-            .append("rank_return,rank_expectancy,sl_points,tp_points,rr,entries,wins,losses,open,skipped,win_rate_pct,net_points,expectancy_points,net_r,best_return,best_expectancy\n");
+        Comparator<Evaluation> returnOrder = Comparator
+                .comparingDouble(Evaluation::netPnlPoints).reversed()
+                .thenComparing(Comparator.comparingDouble(Evaluation::expectancyPoints).reversed());
+        Comparator<Evaluation> expectancyOrder = Comparator
+                .comparingDouble(Evaluation::expectancyPoints).reversed()
+                .thenComparing(Comparator.comparingDouble(Evaluation::netPnlPoints).reversed());
+
+        output.append("\n").append(label).append(" REQUESTED SL/TP COMBINATIONS (raw):\n");
+        appendCombinationResults(output, results.stream().sorted(returnOrder).toList());
+        output.append("\n").append(label).append(" REQUESTED SL/TP COMBINATIONS BY EXPECTANCY:\n");
+        appendCombinationResults(output, results.stream().sorted(expectancyOrder).toList());
+    }
+
+    private static void appendCalendarAnalysis(StringBuilder output, String label, Side side,
+                                              StopTarget combination, List<Signal> signals, List<Candle> candles) {
+        Map<DayOfWeek, BucketStats> weekdayStats = new EnumMap<>(DayOfWeek.class);
+        Map<Integer, BucketStats> halfHourStats = new TreeMap<>();
+        Map<Integer, BucketStats> dayOfMonthStats = new TreeMap<>();
+        int nextAvailableIndex = -1;
+
+        for (Signal signal : signals) {
+            if (signal.side != side || signal.entryIndex <= nextAvailableIndex) continue;
+            if (isRoundNumberFiltered(signal, combination.stopPoints, combination.targetPoints)) continue;
+
+            Exit exit = findExit(candles, signal, combination.stopPoints, combination.targetPoints);
+            nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
+            ZonedDateTime entryTime = Instant.ofEpochMilli(candles.get(signal.entryIndex).timestamp)
+                    .atZone(ZoneId.of("Asia/Kolkata"));
+            weekdayStats.computeIfAbsent(entryTime.getDayOfWeek(), ignored -> new BucketStats())
+                    .add(exit, combination.stopPoints);
+            halfHourStats.computeIfAbsent(halfHourBucket(entryTime), ignored -> new BucketStats())
+                    .add(exit, combination.stopPoints);
+            dayOfMonthStats.computeIfAbsent(entryTime.getDayOfMonth(), ignored -> new BucketStats())
+                    .add(exit, combination.stopPoints);
+        }
+
+        output.append("\n").append(label).append(" SL/TP ")
+              .append(combination.stopPoints).append("/").append(combination.targetPoints)
+              .append(" WEEKDAY ANALYSIS (IST):\n");
+        appendCalendarRows(output, "weekday", weekdayStats);
+        output.append(label).append(" SL/TP ").append(combination.stopPoints).append("/")
+              .append(combination.targetPoints).append(" HALF-HOUR ANALYSIS (IST):\n");
+        for (Map.Entry<Integer, BucketStats> entry : halfHourStats.entrySet()) {
+            appendCalendarLogRow(output, "half_hour_ist", halfHourLabel(entry.getKey()), entry.getValue());
+        }
+        output.append(label).append(" SL/TP ").append(combination.stopPoints).append("/")
+              .append(combination.targetPoints).append(" DAY-OF-MONTH NET-R ANALYSIS (IST):\n");
+        for (int day = 1; day <= 31; day++) {
+            BucketStats stats = dayOfMonthStats.get(day);
+            if (stats != null) appendCalendarLogRow(output, "day_of_month", Integer.toString(day), stats);
+        }
+    }
+
+    private static void appendCalendarRows(StringBuilder output, String dimension, Map<DayOfWeek, BucketStats> stats) {
+        output.append("dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,net_R,expectancy_points,alpha_R_per_trade,sharpe\n");
+        for (DayOfWeek day : DayOfWeek.values()) {
+            BucketStats bucket = stats.get(day);
+            if (bucket != null) appendCalendarLogRow(output, dimension, day.toString(), bucket);
+        }
+    }
+
+    private static void appendCombinationResults(StringBuilder output, List<Evaluation> results) {
+        output.append("sl_points,tp_points,rr,entries,wins,losses,open,skipped,win_rate_pct,net_points,net_r,expectancy_points,alpha_R_per_trade,sharpe\n");
         for (Evaluation result : results) {
-            int returnRank = byReturn.indexOf(result) + 1;
-            int expectancyRank = byExpectancy.indexOf(result) + 1;
             output.append(String.format(Locale.ROOT,
-                "%d,%d,%d,%d,%.3f,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%s,%s%n",
-                returnRank, expectancyRank, result.stopPoints, result.targetPoints,
-                (double) result.targetPoints / result.stopPoints,
-                result.entries, result.wins, result.losses, result.openTrades,
-                result.skipped, result.winRate(), result.netPnlPoints,
-                result.expectancyPoints(), result.netR,
-                returnRank == 1 ? "BEST" : "", expectancyRank == 1 ? "BEST" : ""));
+                    "%d,%d,%.3f,%d,%d,%d,%d,%d,%.2f,%.2f,%.4f,%.2f,%.4f,%.4f%n",
+                    result.stopPoints, result.targetPoints,
+                    (double) result.targetPoints / result.stopPoints, result.entries, result.wins,
+                    result.losses, result.openTrades, result.skipped, result.winRate(),
+                    result.netPnlPoints, result.netR, result.expectancyPoints(),
+                    result.alpha, result.sharpe));
         }
-        output.append('\n');
-        }
+    }
 
         private static int halfHourBucket(ZonedDateTime time) {
         return time.getHour() * 2 + time.getMinute() / 30;
@@ -526,99 +694,12 @@ public class Main {
 
         private static void appendCalendarLogRow(StringBuilder output, String dimension,
                              String bucket, BucketStats stats) {
-        output.append(String.format(Locale.ROOT, "%s,%s,%d,%d,%d,%d,%.2f,%.2f,%.2f%n",
+        output.append(String.format(Locale.ROOT,
+            "%s,%s,%d,%d,%d,%d,%.2f,%.2f,%.4f,%.2f,%.4f,%.4f%n",
             dimension, bucket, stats.entries, stats.wins, stats.losses, stats.open,
-            stats.winRate(), stats.netPnlPoints, stats.expectancyPoints()));
+            stats.winRate(), stats.netPnlPoints, stats.netR, stats.expectancyPoints(),
+            stats.alpha(), stats.sharpe()));
         }
-
-    private static void printRequestedSide(String label, Side side,
-                                           List<StopTarget> combinations,
-                                           List<Signal> signals, List<Candle> candles) {
-        List<Evaluation> results = new ArrayList<>();
-        for (StopTarget combination : combinations) {
-            results.add(evaluate(signals, candles, side,
-                    combination.stopPoints, combination.targetPoints));
-            printCalendarAnalysis(label, side, combination, signals, candles);
-        }
-
-        Comparator<Evaluation> returnOrder = Comparator
-                .comparingDouble(Evaluation::netPnlPoints).reversed()
-                .thenComparing(Comparator.comparingDouble(Evaluation::expectancyPoints).reversed());
-        Comparator<Evaluation> expectancyOrder = Comparator
-                .comparingDouble(Evaluation::expectancyPoints).reversed()
-                .thenComparing(Comparator.comparingDouble(Evaluation::netPnlPoints).reversed());
-
-        System.out.println("\n" + label + " requested SL/TP combinations ranked by net return:");
-        printCombinationResults(results.stream().sorted(returnOrder).toList());
-        System.out.println("\n" + label + " requested SL/TP combinations ranked by expectancy:");
-        printCombinationResults(results.stream().sorted(expectancyOrder).toList());
-    }
-
-    private static void printCalendarAnalysis(String label, Side side, StopTarget combination,
-                                              List<Signal> signals, List<Candle> candles) {
-        Map<DayOfWeek, BucketStats> weekdayStats = new EnumMap<>(DayOfWeek.class);
-        Map<Integer, BucketStats> halfHourStats = new TreeMap<>();
-        int nextAvailableIndex = -1;
-
-        for (Signal signal : signals) {
-            if (signal.side != side || signal.entryIndex <= nextAvailableIndex) {
-                continue;
-            }
-
-            if (isRoundNumberFiltered(signal,
-                    combination.stopPoints,
-                    combination.targetPoints)) {
-                continue;
-            }
-
-            Exit exit = findExit(candles, signal, combination.stopPoints, combination.targetPoints);
-            nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
-
-            ZonedDateTime entryTime = Instant.ofEpochMilli(
-                    candles.get(signal.entryIndex).timestamp).atZone(ZoneId.of("Asia/Kolkata"));
-            weekdayStats.computeIfAbsent(entryTime.getDayOfWeek(), ignored -> new BucketStats())
-                    .add(exit);
-                halfHourStats.computeIfAbsent(halfHourBucket(entryTime), ignored -> new BucketStats())
-                    .add(exit);
-        }
-
-        System.out.printf("\n%s SL/TP %d/%d weekday analysis (IST):%n",
-                label, combination.stopPoints, combination.targetPoints);
-        printCalendarRows("weekday", weekdayStats);
-        System.out.printf("%s SL/TP %d/%d half-hour-of-day analysis (IST):%n",
-                label, combination.stopPoints, combination.targetPoints);
-        for (Map.Entry<Integer, BucketStats> entry : halfHourStats.entrySet()) {
-            printCalendarRow("half_hour_ist", halfHourLabel(entry.getKey()), entry.getValue());
-        }
-    }
-
-    private static void printCalendarRows(String dimension, Map<DayOfWeek, BucketStats> stats) {
-        System.out.println("dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,expectancy_points");
-        for (DayOfWeek day : DayOfWeek.values()) {
-            BucketStats bucket = stats.get(day);
-            if (bucket != null) {
-                printCalendarRow(dimension, day.toString(), bucket);
-            }
-        }
-    }
-
-    private static void printCalendarRow(String dimension, String label, BucketStats stats) {
-        System.out.printf(Locale.ROOT, "%s,%s,%d,%d,%d,%d,%.2f,%.2f,%.2f%n",
-                dimension, label, stats.entries, stats.wins, stats.losses, stats.open,
-                stats.winRate(), stats.netPnlPoints, stats.expectancyPoints());
-    }
-
-    private static void printCombinationResults(List<Evaluation> results) {
-        System.out.println("sl_points,tp_points,rr,entries,wins,losses,open,skipped,win_rate_pct,net_points,expectancy_points,net_r");
-        for (Evaluation result : results) {
-            System.out.printf(Locale.ROOT, "%d,%d,%.3f,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.2f%n",
-                    result.stopPoints, result.targetPoints,
-                    (double) result.targetPoints / result.stopPoints,
-                    result.entries, result.wins, result.losses, result.openTrades,
-                    result.skipped, result.winRate(), result.netPnlPoints,
-                    result.expectancyPoints(), result.netR);
-        }
-    }
 
     private static Evaluation evaluate(List<Signal> signals, List<Candle> candles,
                                        Side mode, int stopPoints, int targetPoints) {
@@ -630,6 +711,7 @@ public class Main {
         int nextAvailableIndex = -1;
         double netPnlPoints = 0;
         double netR = 0;
+        List<Double> tradeR = new ArrayList<>();
 
         for (Signal signal : signals) {
             if (mode != Side.BOTH && signal.side != mode) {
@@ -662,11 +744,14 @@ public class Main {
                 losses++;
             }
             netPnlPoints += exit.pnlPoints;
-            netR += exit.pnlPoints / stopPoints;
+            double r = exit.pnlPoints / stopPoints;
+            netR += r;
+            tradeR.add(r);
         }
 
         return new Evaluation(mode, stopPoints, targetPoints, entries, wins, losses,
-                openTrades, skipped, netPnlPoints, netR);
+                openTrades, skipped, netPnlPoints, netR,
+                calculateAlpha(tradeR, 0.0), calculateSharpeRatio(tradeR, 0.0));
     }
 
     private static boolean hasRoundNumberBetween(double entryPrice, double exitPrice) {
@@ -719,36 +804,70 @@ public class Main {
                     ? candle.high >= targetPrice
                     : candle.low <= targetPrice;
             if (stopHit) {
-                return new Exit(i, false, -stopPoints);
+                return new Exit(i, false, -stopPoints - transactionCostPoints(stopPoints));
             }
             if (targetHit) {
-                return new Exit(i, true, targetPoints);
+                return new Exit(i, true, targetPoints - transactionCostPoints(stopPoints));
             }
         }
         return null;
     }
 
-    private static void printResults(String label, List<Evaluation> results) {
-        System.out.println("\n" + label + " (ranked by net points):");
-        System.out.println("rank,sl_points,target_points,rr,entries,wins,losses,open,skipped,win_rate_pct,net_points,net_r,expectancy_points");
+    private static void appendResults(StringBuilder output, String label, List<Evaluation> results) {
+        output.append("\n").append(label).append(" (ranked by net points):\n");
+        output.append("rank,sl_points,target_points,rr,entries,wins,losses,open,skipped,win_rate_pct,net_points,net_r,expectancy_points,alpha_R_per_trade,sharpe\n");
         for (int i = 0; i < results.size(); i++) {
             Evaluation result = results.get(i);
-            System.out.printf(Locale.ROOT,
-                    "%d,%d,%d,%.3f,%d,%d,%d,%d,%d,%.2f,%.2f,%.2f,%.2f%n",
+            output.append(String.format(Locale.ROOT,
+                    "%d,%d,%d,%.3f,%d,%d,%d,%d,%d,%.2f,%.2f,%.4f,%.2f,%.4f,%.4f%n",
                     i + 1, result.stopPoints, result.targetPoints,
                     (double) result.targetPoints / result.stopPoints,
                     result.entries, result.wins, result.losses, result.openTrades,
                     result.skipped, result.winRate(), result.netPnlPoints,
-                    result.netR, result.expectancyPoints());
+                    result.netR, result.expectancyPoints(), result.alpha, result.sharpe));
         }
+    }
 
-        if (!results.isEmpty()) {
-            Evaluation best = results.get(0);
-            System.out.printf(Locale.ROOT,
-                    "Best %s: SL=%d, target=%d, RR=%.3f, WR=%.2f%%, net_points=%.2f, net_R=%.2f%n",
-                    label, best.stopPoints, best.targetPoints,
-                    (double) best.targetPoints / best.stopPoints,
-                    best.winRate(), best.netPnlPoints, best.netR);
+    private static void appendRawTrades(StringBuilder output, List<TakenTrade> takenTrades,
+                                        List<Signal> signals, List<Candle> candles) {
+        output.append("\nTRADES TAKEN (IST):\n")
+              .append("trade,setup_start_ist,side,entry_time_ist,entry_price,touch_level,sl_points,tp_points,stop_price,target_price,exit_time_ist,exit_price,result,pnl_points,net_R\n");
+        for (int i = 0; i < takenTrades.size(); i++) {
+            TakenTrade trade = takenTrades.get(i);
+            Signal signal = trade.signal;
+            ScheduleRule rule = trade.rule;
+            Candle entryCandle = candles.get(signal.entryIndex);
+            double stopPrice = signal.side == Side.LONG ? signal.entryPrice - rule.stopPoints : signal.entryPrice + rule.stopPoints;
+            double targetPrice = signal.side == Side.LONG ? signal.entryPrice + rule.targetPoints : signal.entryPrice - rule.targetPoints;
+            String exitTime = trade.exit == null ? "" : formatIst(candles.get(trade.exit.candleIndex).timestamp);
+            String exitPrice = trade.exit == null ? "" : formatPrice(trade.exit.win ? targetPrice : stopPrice);
+            String result = trade.exit == null ? "OPEN" : trade.exit.win ? "WIN" : "LOSS";
+            String pnl = trade.exit == null ? "" : formatPrice(trade.exit.pnlPoints);
+            String netR = trade.exit == null ? "" : String.format(Locale.ROOT, "%.6f", trade.exit.pnlPoints / rule.stopPoints);
+            output.append(String.format(Locale.ROOT,
+                "%d,%s,%s,%s,%.2f,%.2f,%d,%d,%.2f,%.2f,%s,%s,%s,%s,%s%n",
+                i + 1, formatIst(signal.setupStart), signal.side, formatIst(entryCandle.timestamp),
+                signal.entryPrice, signal.thirtyMinuteLevel, rule.stopPoints, rule.targetPoints,
+                stopPrice, targetPrice, exitTime, exitPrice, result, pnl, netR));
+        }
+    }
+
+    private static void appendRawScheduleAnalysis(StringBuilder output, String summary,
+                                                   Map<DayOfWeek, BucketStats> weekdayStats,
+                                                   Map<Integer, BucketStats> halfHourStats,
+                                                   Map<Integer, BucketStats> dayOfMonthStats) {
+        output.append("\nSCHEDULE-FILTERED STRATEGY (IST):\n")
+              .append(summary).append('\n')
+              .append("dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,net_R,expectancy_points,alpha_R_per_trade,sharpe\n");
+        for (DayOfWeek day : DayOfWeek.values()) {
+            BucketStats stats = weekdayStats.get(day);
+            if (stats != null) appendCalendarLogRow(output, "weekday", day.toString(), stats);
+        }
+        for (Map.Entry<Integer, BucketStats> entry : halfHourStats.entrySet()) {
+            appendCalendarLogRow(output, "half_hour_ist", halfHourLabel(entry.getKey()), entry.getValue());
+        }
+        for (Map.Entry<Integer, BucketStats> entry : dayOfMonthStats.entrySet()) {
+            appendCalendarLogRow(output, "day_of_month", Integer.toString(entry.getKey()), entry.getValue());
         }
     }
 
@@ -802,7 +921,8 @@ public class Main {
 
     private record Evaluation(Side side, int stopPoints, int targetPoints,
                               int entries, int wins, int losses, int openTrades,
-                              int skipped, double netPnlPoints, double netR) {
+                              int skipped, double netPnlPoints, double netR,
+                              double alpha, double sharpe) {
         private double winRate() {
             int closed = wins + losses;
             return closed == 0 ? 0 : wins * 100.0 / closed;
@@ -819,17 +939,23 @@ public class Main {
         private int losses;
         private int open;
         private double netPnlPoints;
+        private double netR;
+        private final List<Double> returnsR = new ArrayList<>();
 
-        private void add(Exit exit) {
+        private void add(Exit exit, int stopPoints) {
             entries++;
             if (exit == null) {
                 open++;
             } else if (exit.win) {
                 wins++;
                 netPnlPoints += exit.pnlPoints;
+                netR += exit.pnlPoints / stopPoints;
+                returnsR.add(exit.pnlPoints / stopPoints);
             } else {
                 losses++;
                 netPnlPoints += exit.pnlPoints;
+                netR += exit.pnlPoints / stopPoints;
+                returnsR.add(exit.pnlPoints / stopPoints);
             }
         }
 
@@ -841,5 +967,34 @@ public class Main {
         private double expectancyPoints() {
             return entries == 0 ? 0 : netPnlPoints / entries;
         }
+
+        private double alpha() {
+            return calculateAlpha(returnsR, 0.0);
+        }
+
+        private double sharpe() {
+            return calculateSharpeRatio(returnsR, 0.0);
+        }
+    }
+
+    private static double calculateAlpha(List<Double> returns, double benchmarkReturnPerTrade) {
+        if (returns.isEmpty()) return 0.0;
+        double sum = 0.0;
+        for (double r : returns) sum += r - benchmarkReturnPerTrade;
+        return sum / returns.size();
+    }
+
+    private static double calculateSharpeRatio(List<Double> returns, double benchmarkReturnPerTrade) {
+        int n = returns.size();
+        if (n < 2) return 0.0;
+        double mean = calculateAlpha(returns, benchmarkReturnPerTrade);
+        double variance = 0.0;
+        for (double r : returns) {
+            double excess = (r - benchmarkReturnPerTrade) - mean;
+            variance += excess * excess;
+        }
+        variance /= (n - 1);
+        double stdDev = Math.sqrt(variance);
+        return stdDev == 0.0 ? 0.0 : mean / stdDev * Math.sqrt(n);
     }
 }
