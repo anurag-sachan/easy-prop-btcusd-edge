@@ -87,4 +87,4 @@ ROUND_NUMBER_FILTER
 skip when a multiple of 500 lies on BOTH the stop side and the target side
 
 COSTS
-spread_points=15.00,commission_percent_of_risk=10.0000
+spread_points=15.00,commission_percent_of_risk=5.8800

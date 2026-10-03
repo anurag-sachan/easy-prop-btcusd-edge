@@ -32,7 +32,7 @@ public class Main {
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
     private static final double DEFAULT_SPREAD_POINTS = 15.0;
-    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 10.0;
+    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 5.88; //6.78 -> 4.98
     private static double spreadPoints = DEFAULT_SPREAD_POINTS;
     private static double commissionPercentOfRisk = DEFAULT_COMMISSION_PERCENT_OF_RISK;
     private static final DateTimeFormatter IST_FORMAT = DateTimeFormatter
