@@ -32,7 +32,7 @@ public class Main {
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
     private static final double DEFAULT_SPREAD_POINTS = 15.0;
-    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 0;
+    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 5.88;
     private static double spreadPoints = DEFAULT_SPREAD_POINTS;
     private static double commissionPercentOfRisk = DEFAULT_COMMISSION_PERCENT_OF_RISK;
     // Spread handling. The nominal SL/TP combos were tuned at REF spread; at a wider spread both are
@@ -130,7 +130,7 @@ public class Main {
             Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY,
                 DayOfWeek.SUNDAY));
         // Calendar days of the month (IST entry date) on which no trade is taken.
-        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(7);
+        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(2,7,15);
 
     public static void main(String[] args) throws IOException {
         parseCostInputs(args);

@@ -71,7 +71,7 @@ SHORT,*,FRIDAY
 SHORT,*,SATURDAY
 
 EXCLUDED_DAYS_OF_MONTH
-7
+2,7,15
 
 BUY_COMBINATIONS (sl,tp)
 70,300
@@ -87,7 +87,7 @@ ROUND_NUMBER_FILTER
 skip when a multiple of 500 lies on BOTH the stop side and the target side
 
 COSTS
-spread_points=15.00,commission_percent_of_risk=0.0000,broker_fills=1,ref_spread_points=15.00,sl_tp_scale=1.0000,sl_tp_add=1
+spread_points=15.00,commission_percent_of_risk=5.8800,broker_fills=1,ref_spread_points=15.00,sl_tp_scale=1.0000,sl_tp_add=1
 
 SL_TP_ADJUST
 add
