@@ -50,7 +50,8 @@ from plotly.subplots import make_subplots
 
 # ----------------------------------------------------------------- CONFIG
 ACCOUNT_USD = 100_000
-RISK_USD = 1_000
+# RISK_USD = 1_000
+RISK_USD = 2_00
 ROUND_STEP = 500
 SESSIONS = [("ASIA", 330, 810), ("LONDON", 810, 1080)]          # minutes of day (IST); NY = rest
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -521,8 +522,11 @@ def kpis(d, settings, summary):
     sharpe = summary.get("sharpe", s["Sharpe"])
     monthly_returns = d.groupby("month").pnl_usd.sum() / ACCOUNT_USD * 100
     avg_monthly_return = monthly_returns.mean() if len(monthly_returns) else np.nan
+    annual_returns = d.groupby(d.exit_time_ist.dt.year).pnl_usd.sum() / ACCOUNT_USD * 100
+    avg_annual_return = annual_returns.mean() if len(annual_returns) else np.nan
     items = [("Net P&L", f_usd(s["NetUSD"]), s["NetUSD"]),
              (f"Return on {ACCOUNT_USD // 1000}K", f_pct(s["NetUSD"] / ACCOUNT_USD * 100), s["NetUSD"]),
+             ("Avg annual return", f_pct(avg_annual_return), avg_annual_return),
              ("Avg return by month", f_pct(avg_monthly_return), avg_monthly_return),
              ("Trades", f"{s['Trades']:,}", None), ("Win rate", f_pct(s["WinRate"]), None),
              ("Avg planned RR", f_num(s["AvgPlannedRR"]), None),
@@ -569,6 +573,21 @@ def section_B(df, settings, summary):
     risk = df.attrs["risk"]
     fig.update_layout(title=f"Overall equity (start ${ACCOUNT_USD:,}, fixed ${risk:,.0f} risk / trade, net of spread & commission) and drawdown")
     out.append(fig_html(fig, 520))
+
+    # Calendar-year net return on the starting account value. First/last years
+    # may cover only part of a year, so the chart and note make that explicit.
+    annual = df.groupby(df.exit_time_ist.dt.year).pnl_usd.sum() / ACCOUNT_USD * 100
+    if not annual.empty:
+        colors = [GREEN if value >= 0 else RED for value in annual]
+        annual_fig = go.Figure(go.Bar(
+            x=[str(year) for year in annual.index], y=annual.values,
+            marker_color=colors, name="Net return"))
+        annual_fig.update_layout(
+            title="Calendar-year net return (fixed starting account; first/last years may be partial)",
+            yaxis_title="Return (%)", xaxis_title="Exit year",
+            template=TEMPLATE, height=350, margin=dict(l=55, r=20, t=55, b=45))
+        annual_fig.add_hline(y=0, line_color=GREY, line_width=1)
+        out.append(fig_html(annual_fig, 370))
 
     tot = df.pnl_usd.sum()
 
