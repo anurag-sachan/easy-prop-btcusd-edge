@@ -488,8 +488,11 @@ def kpis(d, settings, summary):
     comm = finite_number(settings.get("commission_percent_of_risk", settings.get("commission_pct_of_risk")))
     alpha = summary.get("alpha_R_per_trade", s["Alpha"])
     sharpe = summary.get("sharpe", s["Sharpe"])
+    monthly_returns = d.groupby("month").pnl_usd.sum() / ACCOUNT_USD * 100
+    avg_monthly_return = monthly_returns.mean() if len(monthly_returns) else np.nan
     items = [("Net P&L", f_usd(s["NetUSD"]), s["NetUSD"]),
              (f"Return on {ACCOUNT_USD // 1000}K", f_pct(s["NetUSD"] / ACCOUNT_USD * 100), s["NetUSD"]),
+             ("Avg return by month", f_pct(avg_monthly_return), avg_monthly_return),
              ("Trades", f"{s['Trades']:,}", None), ("Win rate", f_pct(s["WinRate"]), None),
              ("Avg planned RR", f_num(s["AvgPlannedRR"]), None),
              ("Expectancy (R/trade, gross)", f_num(s["AvgR"], 3), s["AvgR"]),

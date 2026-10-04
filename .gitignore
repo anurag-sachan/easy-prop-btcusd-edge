@@ -1,3 +1,4 @@
 .DS_Store
 target/
 binance_csv/
+raw_data_performance.log
