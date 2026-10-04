@@ -7,12 +7,11 @@ Sections
     C. Day-of-month analysis
     D. Setup / entry time distribution (half-hour)
     E. Round-number analysis (500 / 1000 multiples)
-    F. Historical-ratio SL/TP search and best candidate per avoided half-hour
+    F. Best SL/TP candidate per currently avoided half-hour
 
 Usage
     python generate_performance_html.py --raw raw_data_performance.log \
         --schedule backtest_schedule.log --rules <java file with BUY/SELL_TIME_RULES> \
-        --ratio-search sl_tp_ratio_search.log \
         --avoided-time-search avoided_time_ratio_search.log \
         --output performance_dashboard.html
 
@@ -71,8 +70,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--schedule", default="backtest_schedule.log")
     p.add_argument("--rules", default="backtest_rules.txt",
                    help="rules file written by Main.java on every run (default: backtest_rules.txt)")
-    p.add_argument("--ratio-search", default="sl_tp_ratio_search.log",
-                   help="separate historical-ratio SL/TP search log")
     p.add_argument("--avoided-time-search", default="avoided_time_ratio_search.log",
                    help="separate per-avoided-time SL/TP search log")
     p.add_argument("--output", default="performance_dashboard.html")
@@ -212,13 +209,6 @@ def parse_trades(raw: str) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return normalize_numeric_columns(df)
-
-
-def parse_ratio_candidates(text: str, side: str) -> pd.DataFrame:
-    marker = f"{side} NEW SL/TP CANDIDATES (ranked by net_R):"
-    other = "SELL" if side == "BUY" else "BUY"
-    body = section(text, marker, (f"{other} NEW SL/TP CANDIDATES",))
-    return parse_csv_block(body, "rank,source_sl_tp")
 
 
 def parse_avoided_time_winners(text: str) -> list[list[str]]:
@@ -802,23 +792,8 @@ def section_E(df):
 # Section F - SL/TP optimization logs
 # ---------------------------------------------------------------------------
 
-def section_F(ratio_text: str, avoided_text: str) -> str:
-    out = ["<p class='note'>Separate SL/TP searches ranked by cumulative net_R.</p>"]
-    if ratio_text:
-        for side in ("BUY", "SELL"):
-            df = parse_ratio_candidates(ratio_text, side)
-            if df.empty:
-                continue
-            rows = []
-            for _, r in df.head(10).iterrows():
-                rows.append([int(r["rank"]), r["source_sl_tp"], int(r["sl_points"]), int(r["tp_points"]),
-                             int(r["entries"]), (f_num(r["net_R"], 3), r["net_R"]),
-                             f_num(r["net_points"], 1)])
-            out.append(f"<h3>{side} best overall candidates</h3>" +
-                       html_table(rows, ["Rank", "Source ratio", "SL", "TP", "Trades", "Net R", "Net points"]))
-    else:
-        out.append("<p class='note'>No historical-ratio search log found.</p>")
-
+def section_F(avoided_text: str) -> str:
+    out = ["<p class='note'>Each currently avoided half-hour is evaluated separately; candidates are ranked by cumulative net_R.</p>"]
     winners = parse_avoided_time_winners(avoided_text) if avoided_text else []
     if winners:
         out.append("<h3>Best candidate by currently avoided half-hour</h3>" +
@@ -858,11 +833,9 @@ def plotly_script() -> str:
 
 
 def make_dashboard(raw_path: str, schedule_path: str, rules_path: str | None, output_path: str,
-                   ratio_search_path: str = "sl_tp_ratio_search.log",
                    avoided_search_path: str = "avoided_time_ratio_search.log"):
     raw = latest_raw_run(read_text(raw_path))
     schedule = read_text(schedule_path) if Path(schedule_path).exists() else ""
-    ratio_search = read_text(ratio_search_path) if Path(ratio_search_path).exists() else ""
     avoided_search = read_text(avoided_search_path) if Path(avoided_search_path).exists() else ""
 
     settings = parse_settings(raw)
@@ -883,7 +856,7 @@ def make_dashboard(raw_path: str, schedule_path: str, rules_path: str | None, ou
             ("C. Day of month analysis", section_C(df)),
             ("D. Setup / entry time distribution (half-hour)", section_D(df)),
             ("E. Round-number analysis (500 / 1000 multiples)", section_E(df)),
-            ("F. SL/TP optimization by net_R", section_F(ratio_search, avoided_search))]
+            ("F. Per-time SL/TP optimization by net_R", section_F(avoided_search))]
     body = "".join(f"<h2>{t}</h2><section>{h}</section>" for t, h in secs)
     sub = (f"{len(df):,} trades &middot; {df.setup_start_ist.min():%d %b %Y} &rarr; {df.exit_time_ist.max():%d %b %Y} (IST) "
            f"&middot; ${risk:,.0f} risk per trade on ${ACCOUNT_USD:,} account &middot; "
@@ -897,4 +870,4 @@ def make_dashboard(raw_path: str, schedule_path: str, rules_path: str | None, ou
 
 if __name__ == "__main__":
     a = parse_args()
-    make_dashboard(a.raw, a.schedule, a.rules, a.output, a.ratio_search, a.avoided_time_search)
+    make_dashboard(a.raw, a.schedule, a.rules, a.output, a.avoided_time_search)
