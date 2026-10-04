@@ -75,7 +75,8 @@ public class Main {
             timeRule("09:30", "10:00", tradeRule(70, 300)),
             timeRule("10:00", "11:00", tradeRule(70, 300)),
             timeRule("11:00", "11:30", AVOID),
-            timeRule("11:30", "13:30", tradeRule(70, 300)),
+            timeRule("11:30", "13:00", tradeRule(70, 300)),
+            timeRule("13:00", "13:30", AVOID),
             timeRule("13:30", "16:00", AVOID),
             timeRule("16:00", "17:00", tradeRule(70, 300)),
             timeRule("17:00", "17:30", AVOID),
@@ -112,7 +113,8 @@ public class Main {
             timeRule("11:00", "11:30", tradeRule(70, 600)),
             timeRule("11:30", "12:30", AVOID),
             timeRule("12:30", "13:00", tradeRule(70, 600)),
-            timeRule("13:00", "14:00", tradeRule(70, 400)),
+            timeRule("13:00", "13:30", AVOID),
+            timeRule("13:30", "14:00", tradeRule(70, 400)),
             timeRule("14:00", "16:30", AVOID),
             timeRule("16:30", "17:00", tradeRule(70, 600)),
             timeRule("17:00", "17:30", tradeRule(70, 800)),
@@ -137,7 +139,7 @@ public class Main {
             //     DayOfWeek.SUNDAY)
             );
         // Calendar days of the month (IST entry date) on which no trade is taken.
-        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,10,15);
+        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,7,10,15);
 
     public static void main(String[] args) throws IOException {
         parseCostInputs(args);
