@@ -87,7 +87,7 @@ SELL_COMBINATIONS (sl,tp)
 220,800
 
 ROUND_NUMBER_FILTER
-skip when a multiple of 500 lies on BOTH the stop side and the target side
+skip when a multiple of 500 lies between entry and SL (inclusive)
 
 COSTS
 spread_points=15.00,commission_percent_of_risk=5.8800,broker_fills=1,ref_spread_points=15.00,sl_tp_scale=1.0000,sl_tp_add=1

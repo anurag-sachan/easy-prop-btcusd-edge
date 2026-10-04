@@ -176,7 +176,7 @@ public class Main {
         runRequestedCombinations(signals, minuteCandles, rawLog);
         runScheduledBacktest(signals, minuteCandles, rawLog);
         Files.writeString(Path.of("raw_data_performance.log"), rawLog.toString(),
-                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         writeRulesFile();
     }
 
@@ -229,7 +229,7 @@ public class Main {
         out.append("\nSELL_COMBINATIONS (sl,tp)\n");
         for (StopTarget c : SELL_COMBINATIONS) out.append(c.stopPoints).append(',').append(c.targetPoints).append('\n');
 
-        out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies on BOTH the stop side and the target side\n");
+        out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies between entry and SL (inclusive)\n");
         out.append("\nCOSTS\nspread_points=").append(formatPrice(spreadPoints))
            .append(",commission_percent_of_risk=")
            .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk))
@@ -603,9 +603,7 @@ public class Main {
                 continue;
             }
 
-            if (isRoundNumberFiltered(signal,
-                    scheduled.rule.stopPoints,
-                    scheduled.rule.targetPoints)) {
+            if (isRoundNumberFiltered(signal, scheduled.rule.stopPoints)) {
                 continue;
             }
 
@@ -752,7 +750,7 @@ public class Main {
             if (signal.side != side || signal.entryIndex <= nextAvailableIndex) continue;
             double sl = effStop(combination.stopPoints);
             double tp = effTarget(combination.stopPoints, combination.targetPoints);
-            if (isRoundNumberFiltered(signal, sl, tp)) continue;
+            if (isRoundNumberFiltered(signal, sl)) continue;
 
             Exit exit = findExit(candles, signal, sl, tp);
             nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
@@ -847,9 +845,8 @@ public class Main {
                 continue;
             }
 
-            // Round-number filter:
-            // Skip trade if BOTH SL and target sides contain a multiple of 500.
-            if (isRoundNumberFiltered(signal, stopPoints, targetPoints)) {
+            // Skip trade if a multiple of 500 lies between entry and SL.
+            if (isRoundNumberFiltered(signal, stopPoints)) {
                 skipped++;
                 continue;
             }
@@ -890,20 +887,9 @@ public class Main {
         return firstMultiple <= lastMultiple;
     }
 
-    private static boolean isRoundNumberFiltered(Signal signal,
-                                                double stopPoints,
-                                                double targetPoints) {
+    private static boolean isRoundNumberFiltered(Signal signal, double stopPoints) {
         double stopPrice = stopLevel(signal, stopPoints);
-        double targetPrice = targetLevel(signal, targetPoints);
-
-        boolean roundNumberOnStopSide =
-                hasRoundNumberBetween(fillPrice(signal), stopPrice);
-
-        boolean roundNumberOnTargetSide =
-                hasRoundNumberBetween(fillPrice(signal), targetPrice);
-
-        // Avoid only when BOTH sides contain a round number.
-        return roundNumberOnStopSide && roundNumberOnTargetSide;
+        return hasRoundNumberBetween(fillPrice(signal), stopPrice);
     }
 
     private static Exit findExit(List<Candle> candles, Signal signal,
