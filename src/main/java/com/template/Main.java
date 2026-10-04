@@ -32,7 +32,7 @@ public class Main {
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
     private static final double DEFAULT_SPREAD_POINTS = 15.0;
-    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 5.88;
+    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 5.88; //20 spreads, dont work -> (2.5)5ers (3)ftraders would work -> high commission/less spreads even better net_r
     private static double spreadPoints = DEFAULT_SPREAD_POINTS;
     private static double commissionPercentOfRisk = DEFAULT_COMMISSION_PERCENT_OF_RISK;
     // Spread handling. The nominal SL/TP combos were tuned at REF spread; at a wider spread both are

@@ -90,18 +90,18 @@ ROUND_NUMBER_FILTER
 skip when a multiple of 500 lies between entry and SL (inclusive)
 
 COSTS
-spread_points=15.00,commission_percent_of_risk=5.8800,broker_fills=1,ref_spread_points=15.00,sl_tp_scale=1.0000,sl_tp_add=1
+spread_points=2.50,commission_percent_of_risk=25.8800,broker_fills=1,ref_spread_points=15.00,sl_tp_scale=1.0000,sl_tp_add=1
 
 SL_TP_ADJUST
 add
 
 EFFECTIVE_COMBINATIONS (nominal_sl,nominal_tp,effective_sl,effective_tp)
-70,300,85.0000,364.2857
-270,300,285.0000,316.6667
-220,800,235.0000,854.5455
-70,800,85.0000,971.4286
-70,600,85.0000,728.5714
-70,400,85.0000,485.7143
+70,300,72.5000,310.7143
+270,300,272.5000,302.7778
+220,800,222.5000,809.0909
+70,800,72.5000,828.5714
+70,600,72.5000,621.4286
+70,400,72.5000,414.2857
 
 FILL_MODEL
 broker (candles = bid chart): long executes at ask = 1h level + spread, short at bid = 1h level; entry_price/stop/target/exit in the trade log are execution prices (short SL/TP are ask-side, triggered when the bid chart is spread lower); SL/TP measured from execution price; loss=-SL, win=+TP
