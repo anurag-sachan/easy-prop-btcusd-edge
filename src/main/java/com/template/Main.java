@@ -32,9 +32,26 @@ public class Main {
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
     private static final double DEFAULT_SPREAD_POINTS = 15.0;
-    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 5.88; //6.78 -> 4.98
+    private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 0;
     private static double spreadPoints = DEFAULT_SPREAD_POINTS;
     private static double commissionPercentOfRisk = DEFAULT_COMMISSION_PERCENT_OF_RISK;
+    // Spread handling. The nominal SL/TP combos were tuned at REF spread; at a wider spread both are
+    // scaled by spread/ref so the share of the stop eaten by the spread (and the RR) stays the same.
+    private static final double DEFAULT_REF_SPREAD_POINTS = 15.0;
+    private static double refSpreadPoints = DEFAULT_REF_SPREAD_POINTS;
+    private static double slTpScale = 1.0;
+    // true  = broker fills (candles = bid chart): longs execute at the ask (1h level + spread), shorts at
+    //         the bid (1h level); SL/TP are measured from the execution price, so a loss is exactly -SL and
+    //         a win exactly +TP in points; the spread shows up in the hit rate, not as a deduction.
+    // false = legacy: signal level is the fill and the spread is deducted from every trade's P&L.
+    private static boolean brokerFills = true;
+    // How SL/TP are adapted to the spread:
+    //   add   (default) effective SL = SL + spread, effective TP = effective SL * TP / SL, so the RR is unchanged
+    //                   (70/300 at spread 15 -> 85 / 364.2857). With broker fills the stop then triggers exactly
+    //                   the nominal SL away from the signal level on the bid chart.
+    //   scale           previous behaviour: both multiplied by max(1, spread / ref-spread), rounded.
+    //   none            nominal SL/TP used as they are.
+    private static String slTpAdjust = "add";
     private static final DateTimeFormatter IST_FORMAT = DateTimeFormatter
             .ofPattern("yyyy-MM-dd HH:mm")
             .withZone(ZoneId.of("Asia/Kolkata"));
@@ -121,7 +138,11 @@ public class Main {
         rawLog.append("RAW PERFORMANCE DATA\n")
               .append("spread_points=").append(formatPrice(spreadPoints))
               .append(",commission_percent_of_risk=")
-              .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk)).append("\n\n");
+              .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk))
+              .append(",broker_fills=").append(brokerFills ? 1 : 0)
+              .append(",ref_spread_points=").append(formatPrice(refSpreadPoints))
+              .append(",sl_tp_scale=").append(String.format(Locale.ROOT, "%.4f", slTpScale))
+              .append(",sl_tp_add=").append(slTpAdjust.equals("add") ? 1 : 0).append("\n\n");
         List<List<String>> candles1h = dataRows(Csvreader.read1hCSV());
         List<List<String>> candles30m = dataRows(Csvreader.read30mCSV());
         List<List<String>> candles1m = dataRows(Csvreader.read1mCSV());
@@ -202,7 +223,32 @@ public class Main {
         out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies on BOTH the stop side and the target side\n");
         out.append("\nCOSTS\nspread_points=").append(formatPrice(spreadPoints))
            .append(",commission_percent_of_risk=")
-           .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk)).append('\n');
+           .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk))
+           .append(",broker_fills=").append(brokerFills ? 1 : 0)
+           .append(",ref_spread_points=").append(formatPrice(refSpreadPoints))
+           .append(",sl_tp_scale=").append(String.format(Locale.ROOT, "%.4f", slTpScale))
+           .append(",sl_tp_add=").append(slTpAdjust.equals("add") ? 1 : 0).append('\n');
+        out.append("\nSL_TP_ADJUST\n").append(slTpAdjust).append('\n');
+        out.append("\nEFFECTIVE_COMBINATIONS (nominal_sl,nominal_tp,effective_sl,effective_tp)\n");
+        java.util.Set<String> seenCombos = new java.util.LinkedHashSet<>();
+        for (Map<Integer, ScheduleRule> sched : List.of(BUY_TIME_RULES, SELL_TIME_RULES)) {
+            for (int slot = 0; slot < 48; slot++) {
+                ScheduleRule r = sched.get(slot);
+                if (!r.avoid) seenCombos.add(r.stopPoints + "," + r.targetPoints);
+            }
+        }
+        for (StopTarget c : BUY_COMBINATIONS) seenCombos.add(c.stopPoints + "," + c.targetPoints);
+        for (StopTarget c : SELL_COMBINATIONS) seenCombos.add(c.stopPoints + "," + c.targetPoints);
+        for (String key : seenCombos) {
+            String[] p = key.split(",");
+            int sl = Integer.parseInt(p[0]);
+            int tp = Integer.parseInt(p[1]);
+            out.append(sl).append(',').append(tp).append(',')
+               .append(String.format(Locale.ROOT, "%.4f,%.4f", effStop(sl), effTarget(sl, tp))).append('\n');
+        }
+        out.append("\nFILL_MODEL\n").append(brokerFills
+            ? "broker (candles = bid chart): long executes at ask = 1h level + spread, short at bid = 1h level; entry_price/stop/target/exit in the trade log are execution prices (short SL/TP are ask-side, triggered when the bid chart is spread lower); SL/TP measured from execution price; loss=-SL, win=+TP"
+            : "legacy: fill at signal level, spread deducted from every trade").append('\n');
 
         Files.writeString(Path.of("backtest_rules.txt"), out.toString(),
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
@@ -232,15 +278,83 @@ public class Main {
                 spreadPoints = Double.parseDouble(arg.substring("--spread=".length()));
             } else if (arg.startsWith("--commission=")) {
                 commissionPercentOfRisk = Double.parseDouble(arg.substring("--commission=".length()));
+            } else if (arg.startsWith("--ref-spread=")) {
+                refSpreadPoints = Double.parseDouble(arg.substring("--ref-spread=".length()));
+            } else if (arg.startsWith("--sl-tp-adjust=")) {
+                slTpAdjust = arg.substring("--sl-tp-adjust=".length());
+                if (!slTpAdjust.equals("add") && !slTpAdjust.equals("scale") && !slTpAdjust.equals("none")) {
+                    throw new IllegalArgumentException("--sl-tp-adjust must be add, scale or none");
+                }
+            } else if (arg.startsWith("--spread-model=")) {
+                String model = arg.substring("--spread-model=".length());
+                if (!model.equals("broker") && !model.equals("legacy")) {
+                    throw new IllegalArgumentException("--spread-model must be broker or legacy");
+                }
+                brokerFills = model.equals("broker");
             }
         }
         if (spreadPoints < 0 || commissionPercentOfRisk < 0) {
             throw new IllegalArgumentException("Spread and commission must be >= 0");
         }
+        // --ref-spread=0 switches the scaling off.
+        slTpScale = refSpreadPoints > 0 ? Math.max(1.0, spreadPoints / refSpreadPoints) : 1.0;
+        if (brokerFills && !slTpAdjust.equals("add") && spreadPoints >= MIN_STOP_POINTS * slTpScale) {
+            throw new IllegalArgumentException("Spread must be smaller than the smallest stop (" + MIN_STOP_POINTS + ")");
+        }
     }
 
-    private static double transactionCostPoints(int stopPoints) {
-        return spreadPoints + stopPoints * commissionPercentOfRisk / 100.0;
+    /** Stop / target distance actually traded after spread scaling (nominal values are what the rules list). */
+    private static double effStop(int nominalStop) {
+        switch (slTpAdjust) {
+            case "add":   return nominalStop + spreadPoints;
+            case "scale": return Math.round(nominalStop * slTpScale);
+            default:      return nominalStop;
+        }
+    }
+
+    /** Target distance actually traded; in "add" mode it keeps the nominal TP/SL ratio exactly. */
+    private static double effTarget(int nominalStop, int nominalTarget) {
+        switch (slTpAdjust) {
+            case "add":   return effStop(nominalStop) * nominalTarget / nominalStop;
+            case "scale": return Math.round(nominalTarget * slTpScale);
+            default:      return nominalTarget;
+        }
+    }
+
+    /*
+     * Broker price model (candles are the BID chart):
+     *   LONG  buys at the ASK  -> fill = 1h level + spread;  SL / TP are sell orders at the bid,
+     *         so the execution prices ARE the bid-chart levels.
+     *   SHORT sells at the BID -> fill = 1h level;           SL / TP are buy orders at the ASK
+     *         (= bid + spread), so the bid chart must reach the execution price minus the spread.
+     * The log prints execution prices; findExit() converts them to bid-chart triggers.
+     */
+
+    /** Price the trade is executed at: ask (1h level + spread) for longs, bid (1h level) for shorts. */
+    private static double fillPrice(Signal signal) {
+        return signal.entryPrice + (brokerFills && signal.side == Side.LONG ? spreadPoints : 0.0);
+    }
+
+    /** Execution price of the stop: fill - SL for longs, fill + SL for shorts. */
+    private static double stopLevel(Signal signal, double stopPoints) {
+        double base = fillPrice(signal);
+        return signal.side == Side.LONG ? base - stopPoints : base + stopPoints;
+    }
+
+    /** Execution price of the target: fill + TP for longs, fill - TP for shorts. */
+    private static double targetLevel(Signal signal, double targetPoints) {
+        double base = fillPrice(signal);
+        return signal.side == Side.LONG ? base + targetPoints : base - targetPoints;
+    }
+
+    /** Bid-chart level that fires an exit whose execution price is {@code executionPrice}. */
+    private static double bidChartTrigger(Signal signal, double executionPrice) {
+        return brokerFills && signal.side == Side.SHORT ? executionPrice - spreadPoints : executionPrice;
+    }
+
+    private static double transactionCostPoints(double stopPoints) {
+        // Broker mode: the spread is already in the fill / trigger geometry, only commission is deducted.
+        return (brokerFills ? 0.0 : spreadPoints) + stopPoints * commissionPercentOfRisk / 100.0;
     }
 
     private static void printEntryCandles(List<Signal> signals, List<Candle> candles) {
@@ -454,7 +568,9 @@ public class Main {
                     || EXCLUDED_DAYS_OF_MONTH.contains(entryTime.getDayOfMonth())) {
                 avoidedByDay++;
             } else {
-                scheduledSignals.add(new ScheduledSignal(signal, rule));
+                scheduledSignals.add(new ScheduledSignal(signal,
+                        new EffectiveRule(effStop(rule.stopPoints),
+                                effTarget(rule.stopPoints, rule.targetPoints))));
             }
         }
 
@@ -544,14 +660,10 @@ public class Main {
         for (int i = 0; i < takenTrades.size(); i++) {
             TakenTrade trade = takenTrades.get(i);
             Signal signal = trade.signal;
-            ScheduleRule rule = trade.rule;
+            EffectiveRule rule = trade.rule;
             Candle entryCandle = candles.get(signal.entryIndex);
-            double stopPrice = signal.side == Side.LONG
-                ? signal.entryPrice - rule.stopPoints
-                : signal.entryPrice + rule.stopPoints;
-            double targetPrice = signal.side == Side.LONG
-                ? signal.entryPrice + rule.targetPoints
-                : signal.entryPrice - rule.targetPoints;
+            double stopPrice = stopLevel(signal, rule.stopPoints);
+            double targetPrice = targetLevel(signal, rule.targetPoints);
             String exitTime = trade.exit == null ? ""
                 : formatIst(candles.get(trade.exit.candleIndex).timestamp);
             String exitPrice = trade.exit == null ? ""
@@ -559,9 +671,9 @@ public class Main {
             String result = trade.exit == null ? "OPEN" : trade.exit.win ? "WIN" : "LOSS";
             String pnl = trade.exit == null ? "" : formatPrice(trade.exit.pnlPoints);
             logEntry.append(String.format(Locale.ROOT,
-                "%d,%s,%s,%s,%.2f,%.2f,%d,%d,%.2f,%.2f,%s,%s,%s,%s%n",
+                "%d,%s,%s,%s,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%s,%s,%s,%s%n",
                 i + 1, formatIst(signal.setupStart), signal.side,
-                formatIst(entryCandle.timestamp), signal.entryPrice,
+                formatIst(entryCandle.timestamp), fillPrice(signal),
                 signal.thirtyMinuteLevel, rule.stopPoints, rule.targetPoints,
                 stopPrice, targetPrice, exitTime, exitPrice, result, pnl));
         }
@@ -629,18 +741,20 @@ public class Main {
 
         for (Signal signal : signals) {
             if (signal.side != side || signal.entryIndex <= nextAvailableIndex) continue;
-            if (isRoundNumberFiltered(signal, combination.stopPoints, combination.targetPoints)) continue;
+            double sl = effStop(combination.stopPoints);
+            double tp = effTarget(combination.stopPoints, combination.targetPoints);
+            if (isRoundNumberFiltered(signal, sl, tp)) continue;
 
-            Exit exit = findExit(candles, signal, combination.stopPoints, combination.targetPoints);
+            Exit exit = findExit(candles, signal, sl, tp);
             nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
             ZonedDateTime entryTime = Instant.ofEpochMilli(candles.get(signal.entryIndex).timestamp)
                     .atZone(ZoneId.of("Asia/Kolkata"));
             weekdayStats.computeIfAbsent(entryTime.getDayOfWeek(), ignored -> new BucketStats())
-                    .add(exit, combination.stopPoints);
+                    .add(exit, sl);
             halfHourStats.computeIfAbsent(halfHourBucket(entryTime), ignored -> new BucketStats())
-                    .add(exit, combination.stopPoints);
+                    .add(exit, sl);
             dayOfMonthStats.computeIfAbsent(entryTime.getDayOfMonth(), ignored -> new BucketStats())
-                    .add(exit, combination.stopPoints);
+                    .add(exit, sl);
         }
 
         output.append("\n").append(label).append(" SL/TP ")
@@ -702,7 +816,7 @@ public class Main {
         }
 
     private static Evaluation evaluate(List<Signal> signals, List<Candle> candles,
-                                       Side mode, int stopPoints, int targetPoints) {
+                                       Side mode, int nominalStop, int nominalTarget) {
         int entries = 0;
         int wins = 0;
         int losses = 0;
@@ -712,6 +826,8 @@ public class Main {
         double netPnlPoints = 0;
         double netR = 0;
         List<Double> tradeR = new ArrayList<>();
+        double stopPoints = effStop(nominalStop);
+        double targetPoints = effTarget(nominalStop, nominalTarget);
 
         for (Signal signal : signals) {
             if (mode != Side.BOTH && signal.side != mode) {
@@ -749,7 +865,7 @@ public class Main {
             tradeR.add(r);
         }
 
-        return new Evaluation(mode, stopPoints, targetPoints, entries, wins, losses,
+        return new Evaluation(mode, nominalStop, nominalTarget, entries, wins, losses,
                 openTrades, skipped, netPnlPoints, netR,
                 calculateAlpha(tradeR, 0.0), calculateSharpeRatio(tradeR, 0.0));
     }
@@ -766,34 +882,25 @@ public class Main {
     }
 
     private static boolean isRoundNumberFiltered(Signal signal,
-                                                int stopPoints,
-                                                int targetPoints) {
-        double stopPrice = signal.side == Side.LONG
-                ? signal.entryPrice - stopPoints
-                : signal.entryPrice + stopPoints;
-
-        double targetPrice = signal.side == Side.LONG
-                ? signal.entryPrice + targetPoints
-                : signal.entryPrice - targetPoints;
+                                                double stopPoints,
+                                                double targetPoints) {
+        double stopPrice = stopLevel(signal, stopPoints);
+        double targetPrice = targetLevel(signal, targetPoints);
 
         boolean roundNumberOnStopSide =
-                hasRoundNumberBetween(signal.entryPrice, stopPrice);
+                hasRoundNumberBetween(fillPrice(signal), stopPrice);
 
         boolean roundNumberOnTargetSide =
-                hasRoundNumberBetween(signal.entryPrice, targetPrice);
+                hasRoundNumberBetween(fillPrice(signal), targetPrice);
 
         // Avoid only when BOTH sides contain a round number.
         return roundNumberOnStopSide && roundNumberOnTargetSide;
     }
 
     private static Exit findExit(List<Candle> candles, Signal signal,
-                                 int stopPoints, int targetPoints) {
-        double stopPrice = signal.side == Side.LONG
-                ? signal.entryPrice - stopPoints
-                : signal.entryPrice + stopPoints;
-        double targetPrice = signal.side == Side.LONG
-                ? signal.entryPrice + targetPoints
-                : signal.entryPrice - targetPoints;
+                                 double stopPoints, double targetPoints) {
+        double stopPrice = bidChartTrigger(signal, stopLevel(signal, stopPoints));
+        double targetPrice = bidChartTrigger(signal, targetLevel(signal, targetPoints));
 
         for (int i = signal.entryIndex + 1; i < candles.size(); i++) {
             Candle candle = candles.get(i);
@@ -835,19 +942,19 @@ public class Main {
         for (int i = 0; i < takenTrades.size(); i++) {
             TakenTrade trade = takenTrades.get(i);
             Signal signal = trade.signal;
-            ScheduleRule rule = trade.rule;
+            EffectiveRule rule = trade.rule;
             Candle entryCandle = candles.get(signal.entryIndex);
-            double stopPrice = signal.side == Side.LONG ? signal.entryPrice - rule.stopPoints : signal.entryPrice + rule.stopPoints;
-            double targetPrice = signal.side == Side.LONG ? signal.entryPrice + rule.targetPoints : signal.entryPrice - rule.targetPoints;
+            double stopPrice = stopLevel(signal, rule.stopPoints);
+            double targetPrice = targetLevel(signal, rule.targetPoints);
             String exitTime = trade.exit == null ? "" : formatIst(candles.get(trade.exit.candleIndex).timestamp);
             String exitPrice = trade.exit == null ? "" : formatPrice(trade.exit.win ? targetPrice : stopPrice);
             String result = trade.exit == null ? "OPEN" : trade.exit.win ? "WIN" : "LOSS";
             String pnl = trade.exit == null ? "" : formatPrice(trade.exit.pnlPoints);
             String netR = trade.exit == null ? "" : String.format(Locale.ROOT, "%.6f", trade.exit.pnlPoints / rule.stopPoints);
             output.append(String.format(Locale.ROOT,
-                "%d,%s,%s,%s,%.2f,%.2f,%d,%d,%.2f,%.2f,%s,%s,%s,%s,%s%n",
+                "%d,%s,%s,%s,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%s,%s,%s,%s,%s%n",
                 i + 1, formatIst(signal.setupStart), signal.side, formatIst(entryCandle.timestamp),
-                signal.entryPrice, signal.thirtyMinuteLevel, rule.stopPoints, rule.targetPoints,
+                fillPrice(signal), signal.thirtyMinuteLevel, rule.stopPoints, rule.targetPoints,
                 stopPrice, targetPrice, exitTime, exitPrice, result, pnl, netR));
         }
     }
@@ -910,10 +1017,14 @@ public class Main {
     private record ScheduleEntry(int startSlot, int endSlot, ScheduleRule rule) {
     }
 
-    private record ScheduledSignal(Signal signal, ScheduleRule rule) {
+    /** SL/TP distances actually traded (nominal rule after spread adjustment). */
+    private record EffectiveRule(double stopPoints, double targetPoints) {
     }
 
-    private record TakenTrade(Signal signal, ScheduleRule rule, Exit exit) {
+    private record ScheduledSignal(Signal signal, EffectiveRule rule) {
+    }
+
+    private record TakenTrade(Signal signal, EffectiveRule rule, Exit exit) {
     }
 
     private record Exit(int candleIndex, boolean win, double pnlPoints) {
@@ -942,7 +1053,7 @@ public class Main {
         private double netR;
         private final List<Double> returnsR = new ArrayList<>();
 
-        private void add(Exit exit, int stopPoints) {
+        private void add(Exit exit, double stopPoints) {
             entries++;
             if (exit == null) {
                 open++;
