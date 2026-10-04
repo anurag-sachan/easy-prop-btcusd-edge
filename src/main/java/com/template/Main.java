@@ -84,7 +84,9 @@ public class Main {
             timeRule("19:00", "19:30", tradeRule(70, 300)),
             timeRule("19:30", "20:00", AVOID),
             timeRule("20:00", "20:30", AVOID),
-            timeRule("20:30", "22:30", tradeRule(70, 300)),
+            timeRule("20:30", "21:00", tradeRule(70, 300)),
+            timeRule("21:00", "21:30", AVOID),
+            timeRule("21:30", "22:30", tradeRule(70, 300)),
             timeRule("22:30", "23:00", tradeRule(270, 300)),
             timeRule("23:00", "24:00", tradeRule(70, 300)));
         private static final Map<Integer, ScheduleRule> SELL_TIME_RULES = buildSchedule(
@@ -120,15 +122,20 @@ public class Main {
             timeRule("19:30", "20:00", AVOID),
             timeRule("20:00", "20:30", tradeRule(70, 400)),
             timeRule("20:30", "21:00", AVOID),
-            timeRule("21:00", "21:30", tradeRule(70, 400)),
+            timeRule("21:00", "21:30", AVOID),
             timeRule("21:30", "23:00", tradeRule(70, 400)),
             timeRule("23:00", "23:30", AVOID),
             timeRule("23:30", "24:00", tradeRule(70, 600)));
         private static final Map<Side, EnumSet<DayOfWeek>> BEST_DAYS = Map.of(
-            Side.LONG, EnumSet.of(DayOfWeek.THURSDAY, DayOfWeek.MONDAY,
-                DayOfWeek.TUESDAY, DayOfWeek.SUNDAY),
-            Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY,
-                DayOfWeek.SUNDAY));
+            Side.LONG, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
+                DayOfWeek.FRIDAY, DayOfWeek.SUNDAY),
+            Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
+                DayOfWeek.FRIDAY, DayOfWeek.SUNDAY)
+            // Side.LONG, EnumSet.of(DayOfWeek.THURSDAY, DayOfWeek.MONDAY,
+            //     DayOfWeek.TUESDAY, DayOfWeek.SUNDAY),
+            // Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY,
+            //     DayOfWeek.SUNDAY)
+            );
         // Calendar days of the month (IST entry date) on which no trade is taken.
         private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,10,15);
 
