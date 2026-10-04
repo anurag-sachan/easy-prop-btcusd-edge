@@ -135,10 +135,6 @@ public class Main {
                 DayOfWeek.FRIDAY, DayOfWeek.SUNDAY),
             Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
                 DayOfWeek.FRIDAY, DayOfWeek.SUNDAY)
-            // Side.LONG, EnumSet.of(DayOfWeek.THURSDAY, DayOfWeek.MONDAY,
-            //     DayOfWeek.TUESDAY, DayOfWeek.SUNDAY),
-            // Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY,
-            //     DayOfWeek.SUNDAY)
             );
         // Calendar days of the month (IST entry date) on which no trade is taken.
         private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,7,10,15);
