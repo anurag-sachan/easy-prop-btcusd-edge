@@ -87,7 +87,6 @@ public class Main {
             timeRule("20:30", "22:30", tradeRule(70, 300)),
             timeRule("22:30", "23:00", tradeRule(270, 300)),
             timeRule("23:00", "24:00", tradeRule(70, 300)));
-            // timeRule("00:00", "24:00", AVOID));
         private static final Map<Integer, ScheduleRule> SELL_TIME_RULES = buildSchedule(
             timeRule("00:00", "00:30", tradeRule(220, 800)),
             timeRule("00:30", "01:00", tradeRule(70, 800)),
@@ -131,7 +130,7 @@ public class Main {
             Side.SHORT, EnumSet.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY,
                 DayOfWeek.SUNDAY));
         // Calendar days of the month (IST entry date) on which no trade is taken.
-        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(2,7,15);
+        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,10,15);
 
     public static void main(String[] args) throws IOException {
         parseCostInputs(args);
@@ -360,7 +359,7 @@ public class Main {
 
     private static void printEntryCandles(List<Signal> signals, List<Candle> candles) {
         System.out.println("\nCandidate entry candles (IST):");
-        System.out.println("entry_time_ist,side,30m_prev_high_minus_360,1h_open_minus_85,30m_prev_low_plus_360,1h_open_plus_85");
+        System.out.println("entry_time_ist,side,30m_prev_high_minus_360,1h_open_minus_90,30m_prev_low_plus_360,1h_open_plus_85");
         for (Signal signal : signals) {
             Candle candle = candles.get(signal.entryIndex);
             String longTouchLevel = signal.side == Side.LONG
@@ -400,7 +399,7 @@ public class Main {
             }
 
             double oneHourHighLevel = oneHourOpen + 85;
-            double oneHourLowLevel = oneHourOpen - 85;
+            double oneHourLowLevel = oneHourOpen - 90;
             double previousThirtyMinuteHigh = Double.parseDouble(previousThirtyMinute.get(2));
             double previousThirtyMinuteLow = Double.parseDouble(previousThirtyMinute.get(3));
             double longSupport = previousThirtyMinuteHigh - 360;
