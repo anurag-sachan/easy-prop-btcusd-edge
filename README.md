@@ -63,11 +63,12 @@ Allowed weekdays: Monday, Wednesday, Sunday. Friday and Saturday are also avoide
 - If a later candle reaches both stop and target, the stop is counted first.
 - An unclosed position at the end of available data is counted as open; it contributes no realized points.
 - P&L is reported in raw price points, before commissions, funding, spread, and slippage.
+- In the scheduled strategy, entries from 04:30-05:00, 12:00-12:30, and 17:00-17:30 IST use 10% of the usual position risk. Stop and target price distances are unchanged; scheduled net_R and cumulative P&L apply the position-size multiplier. Exploratory grid and requested-combination analyses retain their existing sizing.
 - Win rate is wins divided by closed trades. Expectancy is net realized points divided by entries, including any open entry in the denominator.
 - The exploratory grid constants are SL 70 to 370 in 50-point steps and TP 200 to 1,000 in 100-point steps. The specific combo comparison uses BUY 70/300 and 270/300, and SELL 70/400, 70/600, 70/800, and 220/800.
 
 ## Output
 
-`Main` continues to print candidate entries and unfiltered exploratory/combo reports. Each run appends to `backtest_schedule.log` in the project root, in this order: executed scheduled trades with entry/exit levels and results; the schedule summary; weekday rows; IST half-hour rows (for example `10:00-10:30`); and BUY/SELL requested-combination results with separate return/expectancy ranks and `BEST` markers. The dimension-row schema is `dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,expectancy_points`.
+`Main` continues to print candidate entries and unfiltered exploratory/combo reports. Each run writes executed scheduled trades with setup-open, touch, entry, and exit times/levels/results to `backtest_schedule.log`, followed by the schedule summary and its weekday, IST half-hour, and day-of-month rows. Scheduled trade rows include `risk_multiplier` and risk-adjusted `net_R`. The raw trade rows also include `touch_time_ist`, used by `generate_performance_html.py` for section G: A (setup open to 30m touch) and B (30m touch to 1h entry), each with 30 one-minute buckets showing WIN/LOSS entry counts followed by summed net_R for LONG/SHORT. Net_R values are green when winning net_R exceeds the absolute losing net_R in that bucket, otherwise red. The dimension-row schema is `dimension,bucket,entries,wins,losses,open,win_rate_pct,net_points,expectancy_points`.
 
 Build with `mvn clean test`, then run with `java -cp target/classes com.template.Main` or launch `com.template.Main` from the IDE.

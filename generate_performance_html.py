@@ -8,6 +8,7 @@ Sections
     D. Setup / entry time distribution (half-hour)
     E. Round-number analysis (500 / 1000 multiples)
     F. Best SL/TP candidate per currently avoided half-hour
+    G. Touch-to-entry timing win/loss analysis (30 one-minute buckets)
 
 Usage
     python generate_performance_html.py --raw raw_data_performance.log \
@@ -50,13 +51,14 @@ from plotly.subplots import make_subplots
 
 # ----------------------------------------------------------------- CONFIG
 ACCOUNT_USD = 100_000
-# RISK_USD = 1_000
-RISK_USD = 2_00
+RISK_USD = 1_000
 ROUND_STEP = 500
 SESSIONS = [("ASIA", 330, 810), ("LONDON", 810, 1080)]          # minutes of day (IST); NY = rest
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 MONTHS_FROM = "2023-04"
 MONTHS_TO = "2026-09"
+REDUCED_RISK_SLOTS = {9, 24, 34}  # 04:30, 12:00, 17:00 IST
+REDUCED_RISK_MULTIPLIER = 0.1
 GREEN, RED, BLUE, GREY = "#1b9e77", "#d95f02", "#3b6fb6", "#8a8f98"
 TEMPLATE = "plotly_white"
 
@@ -206,7 +208,7 @@ def parse_trades(raw: str) -> pd.DataFrame:
     df = parse_csv_block(body, "trade,setup_start_ist")
     if df.empty:
         return df
-    for c in ("entry_time_ist", "exit_time_ist", "setup_start_ist"):
+    for c in ("entry_time_ist", "touch_time_ist", "exit_time_ist", "setup_start_ist"):
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return normalize_numeric_columns(df)
@@ -364,9 +366,15 @@ def html_table(rows, header, cls=""):
         for c in r:
             style = ""
             if isinstance(c, tuple):
-                c, v = c
+                if len(c) == 3:
+                    c, v, extra_class = c
+                else:
+                    c, v = c
+                    extra_class = ""
                 if v is not None and not pd.isna(v):
-                    style = f' class="{"pos" if v > 0 else "neg" if v < 0 else ""}"'
+                    color_class = "pos" if v > 0 else "neg" if v < 0 else ""
+                    classes = " ".join(part for part in (color_class, extra_class) if part)
+                    style = f' class="{classes}"' if classes else ""
             out.append(f"<td{style}>{c}</td>")
         out.append("</tr>")
     out.append("</tbody></table></div>")
@@ -399,10 +407,13 @@ def build_frame(trades: pd.DataFrame, settings: dict) -> pd.DataFrame:
     spread = finite_number(settings.get("spread_points"))
     comm_pct = finite_number(settings.get("commission_percent_of_risk", settings.get("commission_pct_of_risk")))
 
-    # Main.java logs pnl_points / net_R AFTER costs; rebuild the cost-free R from the result.
-    df["gross_R"] = np.where(df.result == "WIN", df.tp_points / df.sl_points, -1.0)
-    df["spread_R"] = spread / df.sl_points
-    df["comm_R"] = comm_pct / 100.0
+    # Main.java logs net_R after costs and applies any entry-time risk multiplier.
+    if "risk_multiplier" not in df.columns:
+        df["risk_multiplier"] = 1.0
+    df["risk_multiplier"] = pd.to_numeric(df.risk_multiplier, errors="coerce").fillna(1.0)
+    df["gross_R"] = np.where(df.result == "WIN", df.tp_points / df.sl_points, -1.0) * df.risk_multiplier
+    df["spread_R"] = spread / df.sl_points * df.risk_multiplier
+    df["comm_R"] = comm_pct / 100.0 * df.risk_multiplier
     if "net_R" not in df.columns or df["net_R"].isna().all():
         df["net_R"] = df.pnl_points / df.sl_points
     df["net_R"] = pd.to_numeric(df["net_R"], errors="coerce").fillna(df.pnl_points / df.sl_points)
@@ -571,7 +582,7 @@ def section_B(df, settings, summary):
     fig.add_hline(y=ACCOUNT_USD, line_dash="dot", line_color=GREY, row=1, col=1)
     fig.add_trace(go.Scatter(x=eq.index, y=dd, fill="tozeroy", line=dict(color=RED, width=1), name="Drawdown"), 2, 1)
     risk = df.attrs["risk"]
-    fig.update_layout(title=f"Overall equity (start ${ACCOUNT_USD:,}, fixed ${risk:,.0f} risk / trade, net of spread & commission) and drawdown")
+    fig.update_layout(title=f"Overall equity (start ${ACCOUNT_USD:,}; risk varies by entry half-hour as listed below; net of spread & commission) and drawdown")
     out.append(fig_html(fig, 520))
 
     # Calendar-year net return on the starting account value. First/last years
@@ -625,11 +636,12 @@ def section_B(df, settings, summary):
                           ["Avg win dur", "Avg loss dur"]))
 
     # --- half hour (48 columns)
-    metr = ["Trades", "Win rate", "Avg RR", "Net P&L", "% of profit", "Alpha R/trade", "Sharpe",
+    metr = ["Risk / trade", "Trades", "Win rate", "Avg RR", "Net P&L", "% of profit", "Alpha R/trade", "Sharpe",
             "Spread cost", "Commission", "Avg win dur", "Avg loss dur"]
     cols = {m: [] for m in metr}
     chart = []
     for sl in range(48):
+        cols["Risk / trade"].append(f_usd(risk * (REDUCED_RISK_MULTIPLIER if sl in REDUCED_RISK_SLOTS else 1.0)))
         s = stats(df[df.setup_slot == sl])
         chart.append(s)
         has = s["Trades"] > 0
@@ -644,7 +656,7 @@ def section_B(df, settings, summary):
         cols["Commission"].append(f_usd(s["CommUSD"]) if has else "-")
         cols["Avg win dur"].append(fmt_dur(s["AvgWinMin"]))
         cols["Avg loss dur"].append(fmt_dur(s["AvgLossMin"]))
-    out.append("<h3>By half-hour of day (setup start, IST) - 48 columns</h3>" +
+    out.append("<h3>By half-hour of day (setup start, IST) - 48 columns; risk is applied by matching entry half-hour</h3>" +
                html_table([[m] + cols[m] for m in metr], ["Metric"] + SLOT_LABELS, cls="wide"))
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06, specs=[[{"secondary_y": True}], [{}]])
     fig.add_trace(go.Bar(x=SLOT_LABELS, y=[c["Trades"] for c in chart], marker_color="#c5d3ea", name="Trades"), 1, 1)
@@ -822,6 +834,71 @@ def section_F(avoided_text: str) -> str:
     return "".join(out)
 
 
+def section_G(df: pd.DataFrame) -> str:
+    required = {"touch_time_ist", "setup_start_ist", "entry_time_ist", "side", "result"}
+    if not required.issubset(df.columns):
+        return "<p class='note'>Timing analysis needs a fresh Main.java run that writes touch_time_ist to the trade log.</p>"
+
+    d = df[df.result.isin(["WIN", "LOSS"])].copy()
+    d["A_minute"] = np.floor((d.touch_time_ist - d.setup_start_ist).dt.total_seconds() / 60).astype(int)
+    d["B_minute"] = np.floor((d.entry_time_ist - d.touch_time_ist).dt.total_seconds() / 60).astype(int)
+    minutes = list(range(30))
+    out = ["<p class='note'>Columns 0–29 are elapsed-minute buckets: 0 covers the first minute of the 30m candle, and 29 covers its final minute before the next candle. For each side, WIN/LOSS entry counts appear first; summed net_R by outcome follows. Only the larger absolute net_R value is colored (green for WIN, red for LOSS); the other stays black. A pale bold highlight marks a magnitude over 2× its counterpart. A is setup open to first touch; B is first touch to entry.</p>"]
+    for field, title in (("A_minute", "A. Setup open → 30m touch"), ("B_minute", "B. 30m touch → 1h entry")):
+        out.append(f"<h3>{title}</h3>")
+        z, count_data = [], []
+        ylabels = []
+        bucket_rows = {}
+        for side in ("LONG", "SHORT"):
+            counts_by_outcome, net_by_outcome = {}, {}
+            for outcome in ("WIN", "LOSS"):
+                subset = d[(d.side == side) & (d.result == outcome)]
+                values = subset.groupby(field).net_R.sum().reindex(minutes, fill_value=0)
+                counts = subset.groupby(field).size().reindex(minutes, fill_value=0)
+                net_by_outcome[outcome] = values
+                counts_by_outcome[outcome] = counts
+                ylabels.append(f"{side} {outcome}")
+                z.append(values.tolist())
+                count_data.append(counts.tolist())
+            bucket_rows[side] = (counts_by_outcome, net_by_outcome)
+        fig = go.Figure(go.Heatmap(z=z, x=minutes, y=ylabels, customdata=count_data,
+                                   colorscale=[[0, "#b2182b"], [0.5, "#fff"], [1, "#1a9850"]], zmid=0,
+                                   hovertemplate="%{y}<br>Bucket: %{x} min<br>Net R: %{z:.3f}<br>Trades: %{customdata}<extra></extra>",
+                                   colorbar=dict(title="Net R")))
+        fig.update_layout(title=f"Summed net R by elapsed-minute bucket — {title}",
+                          xaxis_title="Elapsed-minute bucket (0–29)", yaxis_title="Side / outcome",
+                          height=290, template=TEMPLATE, margin=dict(l=100, r=30, t=55, b=45))
+        fig.update_xaxes(dtick=1)
+        out.append(fig_html(fig, 310))
+        total_counts = d.groupby(field).size().reindex(minutes, fill_value=0)
+        out.append("<h4>Total entries — both sides</h4>" +
+                   html_table([["Entries"] + [int(v) for v in total_counts.values]],
+                              ["All outcomes"] + [str(m) for m in minutes], cls="wide"))
+        for side in ("LONG", "SHORT"):
+            counts, net = bucket_rows[side]
+            side_rows = [
+                ["Entries — WIN"] + [int(v) for v in counts["WIN"].values],
+                ["Entries — LOSS"] + [int(v) for v in counts["LOSS"].values],
+            ]
+            win_cells, loss_cells = [], []
+            for win_r, loss_r in zip(net["WIN"].values, net["LOSS"].values):
+                win_mag, loss_mag = abs(win_r), abs(loss_r)
+                if win_mag > loss_mag:
+                    emphasis = "bucket-win strong" if win_mag > 2 * loss_mag else "bucket-win"
+                    win_cells.append((f_num(win_r, 3), 1, emphasis))
+                    loss_cells.append(f_num(loss_r, 3))
+                elif loss_mag > win_mag:
+                    emphasis = "bucket-loss strong" if loss_mag > 2 * win_mag else "bucket-loss"
+                    win_cells.append(f_num(win_r, 3))
+                    loss_cells.append((f_num(loss_r, 3), -1, emphasis))
+                else:
+                    win_cells.append(f_num(win_r, 3))
+                    loss_cells.append(f_num(loss_r, 3))
+            side_rows.extend([["Net_R — WIN"] + win_cells, ["Net_R — LOSS"] + loss_cells])
+            out.append(f"<h4>{side}</h4>" + html_table(side_rows, ["Entries / net_R"] + [str(m) for m in minutes], cls="wide"))
+    return "".join(out)
+
+
 # ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
@@ -835,6 +912,8 @@ section{background:#fff;border-radius:8px;padding:6px 16px 16px;box-shadow:0 1px
 .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin:14px 0}
 .kpi{background:#f5f6f8;border-radius:6px;padding:10px 12px}.kl{font-size:11px;color:#6b7280}.kv{font-size:20px;font-weight:600}
 .pos{color:#1b9e77}.neg{color:#d95f02}
+.bucket-win{color:#16803c!important}.bucket-loss{color:#d62728!important}
+.bucket-win.strong{background:#d9f2df;font-weight:700}.bucket-loss.strong{background:#ffe0e0;font-weight:700}
 .tw{overflow-x:auto}table{border-collapse:collapse;font-size:12.5px;width:100%}
 th,td{padding:5px 9px;border-bottom:1px solid #e5e7eb;text-align:right;white-space:nowrap}
 th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:#fff}
@@ -875,10 +954,11 @@ def make_dashboard(raw_path: str, schedule_path: str, rules_path: str | None, ou
             ("C. Day of month analysis", section_C(df)),
             ("D. Setup / entry time distribution (half-hour)", section_D(df)),
             ("E. Round-number analysis (500 / 1000 multiples)", section_E(df)),
-            ("F. Per-time SL/TP optimization by net_R", section_F(avoided_search))]
+            ("F. Per-time SL/TP optimization by net_R", section_F(avoided_search)),
+            ("G. Setup and entry duration win/loss analysis", section_G(df))]
     body = "".join(f"<h2>{t}</h2><section>{h}</section>" for t, h in secs)
     sub = (f"{len(df):,} trades &middot; {df.setup_start_ist.min():%d %b %Y} &rarr; {df.exit_time_ist.max():%d %b %Y} (IST) "
-           f"&middot; ${risk:,.0f} risk per trade on ${ACCOUNT_USD:,} account &middot; "
+           f"&middot; per-entry risk varies by IST half-hour (${risk * REDUCED_RISK_MULTIPLIER:,.0f} at 04:30, 12:00, 17:00; ${risk:,.0f} otherwise) &middot; "
            f"source: {html.escape(Path(raw_path).name)} &middot; generated {datetime.now():%Y-%m-%d %H:%M}")
     doc = (f"<!doctype html><html><head><meta charset='utf-8'><title>Backtest dashboard</title><style>{CSS}</style>"
            f"{plotly_script()}</head><body><main><h1>Backtest performance dashboard</h1>"

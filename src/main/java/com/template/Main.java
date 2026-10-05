@@ -31,6 +31,8 @@ public class Main {
     private static final int MIN_TARGET_POINTS = 200;
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
+    private static final Set<Integer> REDUCED_RISK_TIME_SLOTS = Set.of(9, 24, 34); // 04:30, 12:00, 17:00 IST
+    private static final double REDUCED_RISK_MULTIPLIER = 0.1;
     private static final double DEFAULT_SPREAD_POINTS = 15.0;
     private static final double DEFAULT_COMMISSION_PERCENT_OF_RISK = 5.88; //20 spreads, dont work -> (2.5)5ers (3)ftraders would work -> high commission/less spreads even better net_r
     private static double spreadPoints = DEFAULT_SPREAD_POINTS;
@@ -228,6 +230,11 @@ public class Main {
         for (StopTarget c : SELL_COMBINATIONS) out.append(c.stopPoints).append(',').append(c.targetPoints).append('\n');
 
         out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies between entry and SL (inclusive)\n");
+        out.append("\nRISK_MULTIPLIER_BY_ENTRY_TIME (IST)\n");
+        for (int slot : new TreeSet<>(REDUCED_RISK_TIME_SLOTS)) {
+            out.append(halfHourLabel(slot)).append(',')
+               .append(String.format(Locale.ROOT, "%.1f", REDUCED_RISK_MULTIPLIER)).append('\n');
+        }
         out.append("\nCOSTS\nspread_points=").append(formatPrice(spreadPoints))
            .append(",commission_percent_of_risk=")
            .append(String.format(Locale.ROOT, "%.4f", commissionPercentOfRisk))
@@ -413,19 +420,19 @@ public class Main {
             double shortResistance = previousThirtyMinuteLow + 360;
 
             if (longSupport < oneHourLowLevel) {
-                int entryIndex = findEntryIndex(minuteCandles, setupStart, setupEnd,
+                SignalHit hit = findEntryIndex(minuteCandles, setupStart, setupEnd,
                         longSupport, oneHourLowLevel, Side.LONG);
-                if (entryIndex >= 0) {
-                    signals.add(new Signal(setupStart, entryIndex, Side.LONG,
+                if (hit != null) {
+                    signals.add(new Signal(setupStart, hit.touchIndex, hit.entryIndex, Side.LONG,
                         longSupport, oneHourLowLevel));
                 }
             }
 
             if (shortResistance > oneHourHighLevel) {
-                int entryIndex = findEntryIndex(minuteCandles, setupStart, setupEnd,
+                SignalHit hit = findEntryIndex(minuteCandles, setupStart, setupEnd,
                         shortResistance, oneHourHighLevel, Side.SHORT);
-                if (entryIndex >= 0) {
-                    signals.add(new Signal(setupStart, entryIndex, Side.SHORT,
+                if (hit != null) {
+                    signals.add(new Signal(setupStart, hit.touchIndex, hit.entryIndex, Side.SHORT,
                         shortResistance, oneHourHighLevel));
                 }
             }
@@ -436,7 +443,7 @@ public class Main {
         return signals;
     }
 
-    private static int findEntryIndex(List<Candle> candles, long setupStart, long setupEnd,
+    private static SignalHit findEntryIndex(List<Candle> candles, long setupStart, long setupEnd,
                                       double touchLevel, double entryLevel, Side side) {
         int low = 0;
         int high = candles.size();
@@ -468,11 +475,11 @@ public class Main {
                         ? candle.high >= entryLevel
                         : candle.low <= entryLevel;
                 if (entered) {
-                    return i;
+                    return new SignalHit(touchIndex, i);
                 }
             }
         }
-        return -1;
+        return null;
     }
 
     private static void runGridSearch(List<Signal> signals, List<Candle> candles, StringBuilder rawLog) {
@@ -577,7 +584,9 @@ public class Main {
             } else {
                 scheduledSignals.add(new ScheduledSignal(signal,
                         new EffectiveRule(effStop(rule.stopPoints),
-                                effTarget(rule.stopPoints, rule.targetPoints))));
+                                effTarget(rule.stopPoints, rule.targetPoints)),
+                        REDUCED_RISK_TIME_SLOTS.contains(halfHourBucket(entryTime))
+                                ? REDUCED_RISK_MULTIPLIER : 1.0));
             }
         }
 
@@ -609,7 +618,7 @@ public class Main {
             Exit exit = findExit(candles, signal,
                     scheduled.rule.stopPoints, scheduled.rule.targetPoints);
             nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
-                takenTrades.add(new TakenTrade(signal, scheduled.rule, exit));
+            takenTrades.add(new TakenTrade(signal, scheduled.rule, scheduled.riskMultiplier, exit));
 
             if (exit == null) {
                 openTrades++;
@@ -619,18 +628,18 @@ public class Main {
                 } else {
                     losses++;
                 }
-                netPnlPoints += exit.pnlPoints;
-                netR += exit.pnlPoints / scheduled.rule.stopPoints;
+                netPnlPoints += exit.pnlPoints * scheduled.riskMultiplier;
+                netR += exit.pnlPoints / scheduled.rule.stopPoints * scheduled.riskMultiplier;
             }
 
             ZonedDateTime entryTime = Instant.ofEpochMilli(
                     candles.get(signal.entryIndex).timestamp).atZone(ZoneId.of("Asia/Kolkata"));
             weekdayStats.computeIfAbsent(entryTime.getDayOfWeek(), ignored -> new BucketStats())
-                    .add(exit, scheduled.rule.stopPoints);
+                    .add(exit, scheduled.rule.stopPoints, scheduled.riskMultiplier);
             halfHourStats.computeIfAbsent(halfHourBucket(entryTime), ignored -> new BucketStats())
-                    .add(exit, scheduled.rule.stopPoints);
+                    .add(exit, scheduled.rule.stopPoints, scheduled.riskMultiplier);
             dayOfMonthStats.computeIfAbsent(entryTime.getDayOfMonth(), ignored -> new BucketStats())
-                    .add(exit, scheduled.rule.stopPoints);
+                    .add(exit, scheduled.rule.stopPoints, scheduled.riskMultiplier);
         }
 
         int closedTrades = wins + losses;
@@ -638,7 +647,7 @@ public class Main {
         double expectancy = entries == 0 ? 0 : netPnlPoints / entries;
         List<Double> scheduleR = takenTrades.stream()
                 .filter(t -> t.exit != null)
-                .map(t -> t.exit.pnlPoints / t.rule.stopPoints)
+                .map(t -> t.exit.pnlPoints / t.rule.stopPoints * t.riskMultiplier)
                 .toList();
         double alpha = calculateAlpha(scheduleR, 0.0);
         double sharpe = calculateSharpeRatio(scheduleR, 0.0);
@@ -660,7 +669,7 @@ public class Main {
             throws IOException {
         StringBuilder logEntry = new StringBuilder()
             .append("TRADES TAKEN (IST):\n")
-            .append("trade,setup_start_ist,side,entry_time_ist,entry_price,touch_level,sl_points,tp_points,stop_price,target_price,exit_time_ist,exit_price,result,pnl_points\n");
+            .append("trade,setup_start_ist,side,entry_time_ist,touch_time_ist,risk_multiplier,entry_price,touch_level,sl_points,tp_points,stop_price,target_price,exit_time_ist,exit_price,result,pnl_points,net_R\n");
 
         for (int i = 0; i < takenTrades.size(); i++) {
             TakenTrade trade = takenTrades.get(i);
@@ -675,12 +684,15 @@ public class Main {
                 : formatPrice(trade.exit.win ? targetPrice : stopPrice);
             String result = trade.exit == null ? "OPEN" : trade.exit.win ? "WIN" : "LOSS";
             String pnl = trade.exit == null ? "" : formatPrice(trade.exit.pnlPoints);
+            String netR = trade.exit == null ? ""
+                : String.format(Locale.ROOT, "%.6f", trade.exit.pnlPoints / rule.stopPoints * trade.riskMultiplier);
             logEntry.append(String.format(Locale.ROOT,
-                "%d,%s,%s,%s,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%s,%s,%s,%s%n",
+                "%d,%s,%s,%s,%s,%.1f,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%s,%s,%s,%s,%s%n",
                 i + 1, formatIst(signal.setupStart), signal.side,
-                formatIst(entryCandle.timestamp), fillPrice(signal),
+                formatIst(entryCandle.timestamp), formatIst(candles.get(signal.touchIndex).timestamp),
+                trade.riskMultiplier, fillPrice(signal),
                 signal.thirtyMinuteLevel, rule.stopPoints, rule.targetPoints,
-                stopPrice, targetPrice, exitTime, exitPrice, result, pnl));
+                stopPrice, targetPrice, exitTime, exitPrice, result, pnl, netR));
         }
 
         logEntry.append("\nSCHEDULE-FILTERED STRATEGY (IST):\n")
@@ -931,7 +943,7 @@ public class Main {
     private static void appendRawTrades(StringBuilder output, List<TakenTrade> takenTrades,
                                         List<Signal> signals, List<Candle> candles) {
         output.append("\nTRADES TAKEN (IST):\n")
-              .append("trade,setup_start_ist,side,entry_time_ist,entry_price,touch_level,sl_points,tp_points,stop_price,target_price,exit_time_ist,exit_price,result,pnl_points,net_R\n");
+              .append("trade,setup_start_ist,side,entry_time_ist,touch_time_ist,risk_multiplier,entry_price,touch_level,sl_points,tp_points,stop_price,target_price,exit_time_ist,exit_price,result,pnl_points,net_R\n");
         for (int i = 0; i < takenTrades.size(); i++) {
             TakenTrade trade = takenTrades.get(i);
             Signal signal = trade.signal;
@@ -943,10 +955,12 @@ public class Main {
             String exitPrice = trade.exit == null ? "" : formatPrice(trade.exit.win ? targetPrice : stopPrice);
             String result = trade.exit == null ? "OPEN" : trade.exit.win ? "WIN" : "LOSS";
             String pnl = trade.exit == null ? "" : formatPrice(trade.exit.pnlPoints);
-            String netR = trade.exit == null ? "" : String.format(Locale.ROOT, "%.6f", trade.exit.pnlPoints / rule.stopPoints);
+            String netR = trade.exit == null ? "" : String.format(Locale.ROOT, "%.6f",
+                    trade.exit.pnlPoints / rule.stopPoints * trade.riskMultiplier);
             output.append(String.format(Locale.ROOT,
-                "%d,%s,%s,%s,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%s,%s,%s,%s,%s%n",
+                "%d,%s,%s,%s,%s,%.1f,%.2f,%.2f,%.3f,%.3f,%.2f,%.2f,%s,%s,%s,%s,%s%n",
                 i + 1, formatIst(signal.setupStart), signal.side, formatIst(entryCandle.timestamp),
+                formatIst(candles.get(signal.touchIndex).timestamp), trade.riskMultiplier,
                 fillPrice(signal), signal.thirtyMinuteLevel, rule.stopPoints, rule.targetPoints,
                 stopPrice, targetPrice, exitTime, exitPrice, result, pnl, netR));
         }
@@ -997,8 +1011,11 @@ public class Main {
     private record Candle(long timestamp, double open, double high, double low, double close) {
     }
 
-    private record Signal(long setupStart, int entryIndex, Side side,
+    private record Signal(long setupStart, int touchIndex, int entryIndex, Side side,
                           double thirtyMinuteLevel, double entryPrice) {
+    }
+
+    private record SignalHit(int touchIndex, int entryIndex) {
     }
 
     private record StopTarget(int stopPoints, int targetPoints) {
@@ -1014,10 +1031,10 @@ public class Main {
     private record EffectiveRule(double stopPoints, double targetPoints) {
     }
 
-    private record ScheduledSignal(Signal signal, EffectiveRule rule) {
+    private record ScheduledSignal(Signal signal, EffectiveRule rule, double riskMultiplier) {
     }
 
-    private record TakenTrade(Signal signal, EffectiveRule rule, Exit exit) {
+    private record TakenTrade(Signal signal, EffectiveRule rule, double riskMultiplier, Exit exit) {
     }
 
     private record Exit(int candleIndex, boolean win, double pnlPoints) {
@@ -1047,19 +1064,23 @@ public class Main {
         private final List<Double> returnsR = new ArrayList<>();
 
         private void add(Exit exit, double stopPoints) {
+            add(exit, stopPoints, 1.0);
+        }
+
+        private void add(Exit exit, double stopPoints, double riskMultiplier) {
             entries++;
             if (exit == null) {
                 open++;
             } else if (exit.win) {
                 wins++;
-                netPnlPoints += exit.pnlPoints;
-                netR += exit.pnlPoints / stopPoints;
-                returnsR.add(exit.pnlPoints / stopPoints);
+                netPnlPoints += exit.pnlPoints * riskMultiplier;
+                netR += exit.pnlPoints / stopPoints * riskMultiplier;
+                returnsR.add(exit.pnlPoints / stopPoints * riskMultiplier);
             } else {
                 losses++;
-                netPnlPoints += exit.pnlPoints;
-                netR += exit.pnlPoints / stopPoints;
-                returnsR.add(exit.pnlPoints / stopPoints);
+                netPnlPoints += exit.pnlPoints * riskMultiplier;
+                netR += exit.pnlPoints / stopPoints * riskMultiplier;
+                returnsR.add(exit.pnlPoints / stopPoints * riskMultiplier);
             }
         }
 
