@@ -8,7 +8,8 @@ Sections
     D. Setup / entry time distribution (half-hour)
     E. Round-number analysis (500 / 1000 multiples)
     F. Best SL/TP candidate per currently avoided half-hour
-    G. Touch-to-entry timing win/loss analysis (30 one-minute buckets)
+    G. Touch-to-entry elapsed timing win/loss analysis (30 one-minute buckets)
+    H. Level event minute-of-hour win/loss analysis (60 one-minute buckets)
 
 Usage
     python generate_performance_html.py --raw raw_data_performance.log \
@@ -900,6 +901,76 @@ def section_G(df: pd.DataFrame) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Section H - event minute within hour (clock-minute buckets 0–59)
+# ---------------------------------------------------------------------------
+
+def section_H(df: pd.DataFrame) -> str:
+    required = {"touch_time_ist", "entry_time_ist", "side", "result", "net_R"}
+    if not required.issubset(df.columns):
+        return "<p class='note'>Minute-of-hour analysis needs touch_time_ist and entry_time_ist in the trade log.</p>"
+
+    d = df[df.result.isin(["WIN", "LOSS"])].copy()
+    minute_labels = list(range(60))
+    out = ["<p class='note'>Buckets are clock minutes within each IST hour: 0 = HH:00, 59 = HH:59. A groups by the minute the 30m level was touched; B groups by the minute the 1h entry level was reached. Net_R is summed by side and final trade outcome.</p>"]
+    for time_col, title in (("touch_time_ist", "A. 30m level touch"),
+                            ("entry_time_ist", "B. 1h entry level")):
+        minute_col = f"{time_col}_minute_of_hour"
+        d[minute_col] = d[time_col].dt.minute
+        out.append(f"<h3>{title}</h3>")
+        net_by_side, count_by_side = {}, {}
+        z, count_data, ylabels = [], [], []
+        for side in ("LONG", "SHORT"):
+            net_by_side[side], count_by_side[side] = {}, {}
+            for outcome in ("WIN", "LOSS"):
+                subset = d[(d.side == side) & (d.result == outcome)]
+                net = subset.groupby(minute_col).net_R.sum().reindex(minute_labels, fill_value=0)
+                counts = subset.groupby(minute_col).size().reindex(minute_labels, fill_value=0)
+                net_by_side[side][outcome] = net
+                count_by_side[side][outcome] = counts
+                z.append(net.tolist())
+                count_data.append(counts.tolist())
+                ylabels.append(f"{side} {outcome}")
+
+        fig = go.Figure(go.Heatmap(z=z, x=minute_labels, y=ylabels, customdata=count_data,
+                                   colorscale=[[0, "#b2182b"], [0.5, "#fff"], [1, "#1a9850"]], zmid=0,
+                                   hovertemplate="%{y}<br>IST minute: %{x}<br>Summed net_R: %{z:.3f}<br>Entries: %{customdata}<extra></extra>",
+                                   colorbar=dict(title="Summed net_R")))
+        fig.update_layout(title=f"Summed net_R by IST minute within the hour — {title}",
+                          xaxis_title="Minute within the hour (IST)", yaxis_title="Side / outcome",
+                          height=300, template=TEMPLATE, margin=dict(l=100, r=30, t=55, b=45))
+        fig.update_xaxes(dtick=5)
+        out.append(fig_html(fig, 320))
+
+        total_entries = d.groupby(minute_col).size().reindex(minute_labels, fill_value=0)
+        out.append("<h4>Total entries — both sides</h4>" +
+                   html_table([["Entries"] + [int(v) for v in total_entries.values]],
+                              ["All outcomes"] + [str(m) for m in minute_labels], cls="wide"))
+        for side in ("LONG", "SHORT"):
+            counts, net = count_by_side[side], net_by_side[side]
+            rows = [
+                ["Entries — WIN"] + [int(v) for v in counts["WIN"].values],
+                ["Entries — LOSS"] + [int(v) for v in counts["LOSS"].values],
+            ]
+            win_cells, loss_cells = [], []
+            for win_r, loss_r in zip(net["WIN"].values, net["LOSS"].values):
+                win_mag, loss_mag = abs(win_r), abs(loss_r)
+                if win_mag > loss_mag:
+                    style = "bucket-win strong" if win_mag > 2 * loss_mag else "bucket-win"
+                    win_cells.append((f_num(win_r, 3), 1, style))
+                    loss_cells.append(f_num(loss_r, 3))
+                elif loss_mag > win_mag:
+                    style = "bucket-loss strong" if loss_mag > 2 * win_mag else "bucket-loss"
+                    win_cells.append(f_num(win_r, 3))
+                    loss_cells.append((f_num(loss_r, 3), -1, style))
+                else:
+                    win_cells.append(f_num(win_r, 3))
+                    loss_cells.append(f_num(loss_r, 3))
+            rows.extend([["Net_R — WIN"] + win_cells, ["Net_R — LOSS"] + loss_cells])
+            out.append(f"<h4>{side}</h4>" + html_table(rows, ["Entries / net_R"] + [str(m) for m in minute_labels], cls="wide"))
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
 # Page
 # ---------------------------------------------------------------------------
 
@@ -955,7 +1026,8 @@ def make_dashboard(raw_path: str, schedule_path: str, rules_path: str | None, ou
             ("D. Setup / entry time distribution (half-hour)", section_D(df)),
             ("E. Round-number analysis (500 / 1000 multiples)", section_E(df)),
             ("F. Per-time SL/TP optimization by net_R", section_F(avoided_search)),
-            ("G. Setup and entry duration win/loss analysis", section_G(df))]
+            ("G. Setup and entry duration win/loss analysis", section_G(df)),
+            ("H. Level event minute-of-hour win/loss analysis", section_H(df))]
     body = "".join(f"<h2>{t}</h2><section>{h}</section>" for t, h in secs)
     sub = (f"{len(df):,} trades &middot; {df.setup_start_ist.min():%d %b %Y} &rarr; {df.exit_time_ist.max():%d %b %Y} (IST) "
            f"&middot; per-entry risk varies by IST half-hour (${risk * REDUCED_RISK_MULTIPLIER:,.0f} at 04:30, 12:00, 17:00; ${risk:,.0f} otherwise) &middot; "
