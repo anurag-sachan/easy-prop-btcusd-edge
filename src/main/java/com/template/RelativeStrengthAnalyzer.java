@@ -96,6 +96,7 @@ public final class RelativeStrengthAnalyzer {
             if (value == null) continue;
             double previous = strength;
             strength += value;
+            
             String direction = value >= 0 ? "Relative INC" : "Relative DEC";
             double changePct = Math.abs(previous) < EPSILON ? 0.0 : value / Math.abs(previous) * 100.0;
             chain.add(type.label + " @ " + TIME.format(Instant.ofEpochMilli(candle.timestamp))

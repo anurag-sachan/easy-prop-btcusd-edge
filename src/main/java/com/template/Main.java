@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.List;
@@ -590,11 +591,13 @@ public class Main {
             }
         }
 
+        Map<StrengthKey, Double> highlightedStrength = buildHighlightedStrength(scheduledSignals, candles);
         int entries = 0;
         int wins = 0;
         int losses = 0;
         int openTrades = 0;
         int skippedWhileOpen = 0;
+        int rejectedByNegativeStrength = 0;
         int nextAvailableIndex = -1;
         double netPnlPoints = 0;
         double netR = 0;
@@ -611,6 +614,13 @@ public class Main {
             }
 
             if (isRoundNumberFiltered(signal, scheduled.rule.stopPoints)) {
+                continue;
+            }
+
+            StrengthKey strengthKey = strengthKey(signal, candles, scheduled.rule);
+            double currentStrength = highlightedStrength.getOrDefault(strengthKey, 0.0);
+            if (highlightedStrength.containsKey(strengthKey) && currentStrength < 0.0) {
+                rejectedByNegativeStrength++;
                 continue;
             }
 
@@ -652,9 +662,9 @@ public class Main {
         double alpha = calculateAlpha(scheduleR, 0.0);
         double sharpe = calculateSharpeRatio(scheduleR, 0.0);
         String summary = String.format(Locale.ROOT,
-            "signals=%d,eligible_by_schedule=%d,entries=%d,wins=%d,losses=%d,open=%d,skipped_while_open=%d,avoided_by_time=%d,avoided_by_day=%d,unlisted_times=%d,win_rate_pct=%.2f,net_points=%.2f,net_R=%.2f,expectancy_points=%.2f,alpha_R_per_trade=%.4f,sharpe=%.4f,spread_points=%.2f,commission_pct_of_risk=%.4f",
+            "signals=%d,eligible_by_schedule=%d,entries=%d,wins=%d,losses=%d,open=%d,skipped_while_open=%d,rejected_by_negative_strength=%d,avoided_by_time=%d,avoided_by_day=%d,unlisted_times=%d,win_rate_pct=%.2f,net_points=%.2f,net_R=%.2f,expectancy_points=%.2f,alpha_R_per_trade=%.4f,sharpe=%.4f,spread_points=%.2f,commission_pct_of_risk=%.4f",
             signals.size(), scheduledSignals.size(), entries, wins, losses, openTrades,
-            skippedWhileOpen, avoidedByHour, avoidedByDay, unlistedTimes,
+            skippedWhileOpen, rejectedByNegativeStrength, avoidedByHour, avoidedByDay, unlistedTimes,
             winRate, netPnlPoints, netR, expectancy, alpha, sharpe, spreadPoints, commissionPercentOfRisk);
         appendScheduleLog(summary, takenTrades, weekdayStats, halfHourStats, dayOfMonthStats,
             signals, candles, rawLog);
@@ -814,6 +824,62 @@ public class Main {
 
         private static int halfHourBucket(ZonedDateTime time) {
         return time.getHour() * 2 + time.getMinute() / 30;
+        }
+
+        private static StrengthKey strengthKey(Signal signal, List<Candle> candles,
+                                               EffectiveRule rule) {
+            ZonedDateTime touchTime = Instant.ofEpochMilli(
+                    candles.get(signal.touchIndex).timestamp).atZone(ZoneId.of("Asia/Kolkata"));
+            return new StrengthKey(signal.side, touchTime.getMinute(),
+                    rule.stopPoints, rule.targetPoints);
+        }
+
+        /**
+         * Builds the historical pre-entry strength lookup from the unfiltered
+         * scheduled population. WIN/LOSS magnitudes are first compared with the
+         * same 2x rule used by the analyzer; the retained bucket stores WIN+LOSS.
+         */
+        private static Map<StrengthKey, Double> buildHighlightedStrength(
+                List<ScheduledSignal> scheduledSignals, List<Candle> candles) {
+            Map<StrengthOutcomeKey, Double> outcomeSums = new HashMap<>();
+            int nextAvailableIndex = -1;
+            for (ScheduledSignal scheduled : scheduledSignals) {
+                Signal signal = scheduled.signal;
+                if (signal.entryIndex <= nextAvailableIndex
+                        || isRoundNumberFiltered(signal, scheduled.rule.stopPoints)) {
+                    continue;
+                }
+                Exit exit = findExit(candles, signal,
+                        scheduled.rule.stopPoints, scheduled.rule.targetPoints);
+                nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
+                if (exit == null) {
+                    continue;
+                }
+                StrengthKey bucket = strengthKey(signal, candles, scheduled.rule);
+                Result outcome = exit.win ? Result.WIN : Result.LOSS;
+                double netR = exit.pnlPoints / scheduled.rule.stopPoints
+                        * scheduled.riskMultiplier;
+                outcomeSums.merge(new StrengthOutcomeKey(bucket, outcome), netR, Double::sum);
+            }
+
+            Map<StrengthKey, Double> highlighted = new HashMap<>();
+            Map<StrengthKey, Double> allBuckets = new HashMap<>();
+            Set<StrengthKey> bucketKeys = new HashSet<>();
+            for (StrengthOutcomeKey key : outcomeSums.keySet()) {
+                bucketKeys.add(key.bucket);
+            }
+            for (StrengthKey bucket : bucketKeys) {
+                double win = outcomeSums.getOrDefault(
+                        new StrengthOutcomeKey(bucket, Result.WIN), 0.0);
+                double loss = outcomeSums.getOrDefault(
+                        new StrengthOutcomeKey(bucket, Result.LOSS), 0.0);
+                if (Math.abs(win) > 2.0 * Math.abs(loss)
+                        || Math.abs(loss) > 2.0 * Math.abs(win)) {
+                    allBuckets.put(bucket, win + loss);
+                }
+            }
+            highlighted.putAll(allBuckets);
+            return highlighted;
         }
 
         private static String halfHourLabel(int bucket) {
@@ -1038,6 +1104,18 @@ public class Main {
     }
 
     private record Exit(int candleIndex, boolean win, double pnlPoints) {
+    }
+
+    private record StrengthKey(Side side, int clockMinute,
+                               double stopPoints, double targetPoints) {
+    }
+
+    private enum Result {
+        WIN,
+        LOSS
+    }
+
+    private record StrengthOutcomeKey(StrengthKey bucket, Result outcome) {
     }
 
     private record Evaluation(Side side, int stopPoints, int targetPoints,
