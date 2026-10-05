@@ -32,6 +32,7 @@ public class Main {
     private static final int MIN_TARGET_POINTS = 200;
     private static final int MAX_TARGET_POINTS = 1000;
     private static final int TARGET_STEP_POINTS = 100;
+    // private static final Set<Integer> REDUCED_RISK_TIME_SLOTS = Set.of(9, 24, 34); // 04:30, 12:00, 17:00 IST
     private static final Set<Integer> REDUCED_RISK_TIME_SLOTS = Set.of(9, 24, 34); // 04:30, 12:00, 17:00 IST
     private static final double REDUCED_RISK_MULTIPLIER = 0.1;
     private static final double DEFAULT_SPREAD_POINTS = 15.0;
@@ -140,7 +141,7 @@ public class Main {
                 DayOfWeek.FRIDAY, DayOfWeek.SUNDAY)
             );
         // Calendar days of the month (IST entry date) on which no trade is taken.
-        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,7,10,14,15);
+        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(10,14,15);
 
     public static void main(String[] args) throws IOException {
         parseCostInputs(args);

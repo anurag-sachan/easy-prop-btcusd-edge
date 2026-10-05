@@ -79,7 +79,7 @@ SHORT,*,FRIDAY
 SHORT,*,SATURDAY
 
 EXCLUDED_DAYS_OF_MONTH
-1,2,7,10,14,15
+10,14,15
 
 BUY_COMBINATIONS (sl,tp)
 70,300
@@ -95,9 +95,6 @@ ROUND_NUMBER_FILTER
 skip when a multiple of 500 lies between entry and SL (inclusive)
 
 RISK_MULTIPLIER_BY_ENTRY_TIME (IST)
-04:30-05:00,0.1
-12:00-12:30,0.1
-17:00-17:30,0.1
 
 COSTS
 spread_points=15.00,commission_percent_of_risk=5.8800,broker_fills=1,ref_spread_points=15.00,sl_tp_scale=1.0000,sl_tp_add=1
