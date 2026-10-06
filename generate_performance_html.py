@@ -2,7 +2,7 @@
 """Generate the backtest performance dashboard (single self-contained HTML) from the Java backtest logs.
 
 Sections
-    A. Setup constraints - BUY & SELL, AVOID vs TRADE, by time and day
+    A. Setup constraints - SELL & BUY, AVOID vs TRADE, by time and day
     B. Performance analysis (incl. spread / commission / alpha / sharpe)
     C. Day-of-month analysis
     D. Setup / entry time distribution (half-hour)
@@ -487,6 +487,7 @@ def section_A(rules):
                                textfont=dict(size=9), xgap=2, ygap=2,
                                hovertemplate="%{y} %{x}<br>%{text}<extra></extra>"))
     fig.update_xaxes(side="top", tickangle=-90, tickfont=dict(size=9))
+    fig.update_yaxes(autorange="reversed")
     fig.update_layout(title="Setup-time grid (IST) - cell = SL / TP points, grey = AVOID")
     leg = " ".join(f'<span class="chip" style="background:{pal[code[c] % len(pal)]}">{c[0]} / {c[1]}</span>'
                    for c in all_combos) + f' <span class="chip" style="background:{pal[0]}">AVOID</span>'
@@ -497,9 +498,10 @@ def section_A(rules):
     fig2 = go.Figure(go.Heatmap(z=dz, x=DAYS, y=["SELL (SHORT)", "BUY (LONG)"],
                                 colorscale=[[0, "#d9d9d9"], [0.5, "#d9d9d9"], [0.5, "#66c2a5"], [1, "#66c2a5"]],
                                 zmin=0, zmax=1, showscale=False, text=dt, texttemplate="%{text}", xgap=3, ygap=3))
+    fig2.update_yaxes(autorange="reversed")
     fig2.update_layout(title="Allowed days of week")
     rows = []
-    for k, lab in (("BUY", "BUY (LONG)"), ("SELL", "SELL (SHORT)")):
+    for k, lab in (("SELL", "SELL (SHORT)"), ("BUY", "BUY (LONG)")):
         tr = sum(v is not None for v in sched[k])
         rows.append([lab, f"{tr} ({tr / 2:.1f}h)", f"{48 - tr} ({(48 - tr) / 2:.1f}h)",
                      ", ".join(f"{a}/{b}" for a, b in combos[k]),
@@ -509,7 +511,7 @@ def section_A(rules):
     sd = {}
     for side, stop, day in (r[:3] for r in extras["stop_days"] if len(r) >= 3):
         sd.setdefault(side, []).append(f"{day.title()[:3]}" + ("" if stop == "*" else f" (SL {stop})"))
-    for side, lab in (("LONG", "BUY (LONG)"), ("SHORT", "SELL (SHORT)")):
+    for side, lab in (("SHORT", "SELL (SHORT)"), ("LONG", "BUY (LONG)")):
         ex.append([lab, ", ".join(sd.get(side, [])) or "-"])
     dom = ", ".join(str(x) for x in extras["dom"]) or "-"
     tbl2 = html_table(ex, ["Side", "Extra weekday exclusions"])
@@ -1020,7 +1022,7 @@ def make_dashboard(raw_path: str, schedule_path: str, rules_path: str | None, ou
         print("WARNING: no rules found (run Main.java to create backtest_rules.txt); section A will be empty.")
 
     risk = df.attrs["risk"]
-    secs = [("A. Setup constraints - BUY &amp; SELL, AVOID vs TRADE, by time and day", section_A(rules)),
+    secs = [("A. Setup constraints - SELL &amp; BUY, AVOID vs TRADE, by time and day", section_A(rules)),
             ("B. Performance analysis", section_B(df, settings, summary)),
             ("C. Day of month analysis", section_C(df)),
             ("D. Setup / entry time distribution (half-hour)", section_D(df)),
