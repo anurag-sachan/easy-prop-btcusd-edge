@@ -231,6 +231,10 @@ public class Main {
         out.append("\nSELL_COMBINATIONS (sl,tp)\n");
         for (StopTarget c : SELL_COMBINATIONS) out.append(c.stopPoints).append(',').append(c.targetPoints).append('\n');
 
+        out.append("\nSCHEDULED_COMBINATIONS (side,sl,tp)\n");
+        appendScheduledCombinations(out, "LONG", BUY_TIME_RULES);
+        appendScheduledCombinations(out, "SHORT", SELL_TIME_RULES);
+
         out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies between entry and SL (inclusive)\n");
         out.append("\nRISK_MULTIPLIER_BY_ENTRY_TIME (IST)\n");
         for (int slot : new TreeSet<>(REDUCED_RISK_TIME_SLOTS)) {
@@ -281,6 +285,19 @@ public class Main {
                    .append(rule.avoid ? "AVOID" : rule.stopPoints + "," + rule.targetPoints).append('\n');
                 start = slot;
             }
+        }
+    }
+
+    private static void appendScheduledCombinations(StringBuilder out, String side,
+            Map<Integer, ScheduleRule> schedule) {
+        Set<String> combinations = new TreeSet<>(Comparator.comparingInt((String value) ->
+                Integer.parseInt(value.substring(0, value.indexOf(','))))
+                .thenComparingInt(value -> Integer.parseInt(value.substring(value.indexOf(',') + 1))));
+        schedule.values().stream()
+                .filter(rule -> !rule.avoid)
+                .forEach(rule -> combinations.add(rule.stopPoints + "," + rule.targetPoints));
+        for (String combination : combinations) {
+            out.append(side).append(',').append(combination).append('\n');
         }
     }
 

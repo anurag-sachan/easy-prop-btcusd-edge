@@ -22,11 +22,12 @@ code that produced the logs). An old-style Java snippet with BUY_TIME_RULES = bu
 also accepted. If no rules are found, section A shows a note instead of the grid.
 
 Conventions (edit the CONFIG block to change)
-    * Main.java already deducts costs: pnl_points and net_R are NET of spread + commission.
-      P&L in USD = net_R * RISK_USD.
+    * With the current broker-fill model, spread is represented by ask/bid execution and the
+      effective SL/TP distances; pnl_points is the realized execution P&L, while net_R includes
+      commission and the scheduled risk multiplier. P&L in USD = net_R * RISK_USD.
     * Gross "Expectancy R" = cost-free R (WIN = tp/sl, LOSS = -1). "Alpha R/trade" = mean net_R.
-    * Spread cost per trade (R)     = spread_points / sl_points
-      Commission cost per trade (R) = commission_percent_of_risk / 100
+    * Commission cost per trade (R) = commission_percent_of_risk / 100. Spread is not subtracted
+      again from broker-fill P&L.
     * "Sharpe" uses the same formula as Main.java: mean(net_R) / stdev(net_R) * sqrt(n) (sample stdev),
       so table values match the Java log; the KPI card shows the Java summary value when present.
     * Sessions (IST): ASIA 05:30-13:30, LONDON 13:30-18:00, NY 18:00-05:30; session = entry vs exit time.
@@ -269,10 +270,18 @@ def parse_rules_file(text: str):
         days[side] = [d.title()[:3] for d in ds]
     combos = {k: [tuple(int(x) for x in ln.split(",")) for ln in blocks.get(f"{k}_COMBINATIONS", [])]
               for k in ("BUY", "SELL")}
+    scheduled_combos = {"LONG": [], "SHORT": []}
+    for ln in blocks.get("SCHEDULED_COMBINATIONS", []):
+        parts = ln.split(",")
+        if len(parts) == 3 and parts[0] in scheduled_combos:
+            scheduled_combos[parts[0]].append((int(parts[1]), int(parts[2])))
     extras = {
         "stop_days": [ln.split(",") for ln in blocks.get("EXCLUDED_STOP_DAYS", [])],
         "dom": [int(x) for x in ",".join(blocks.get("EXCLUDED_DAYS_OF_MONTH", [])).split(",") if x.strip()],
         "round": " ".join(blocks.get("ROUND_NUMBER_FILTER", [])),
+        "scheduled_combos": scheduled_combos,
+        "costs": " ".join(blocks.get("COSTS", [])),
+        "fill_model": " ".join(blocks.get("FILL_MODEL", [])),
     }
     return sched, days, combos, extras
 
@@ -308,7 +317,11 @@ def parse_java_rules(text: str):
     for key in ("BUY", "SELL"):
         m = re.search(rf"{key}_COMBINATIONS\s*=\s*List\.of\((.*?)\);", text, re.S)
         combos[key] = [tuple(map(int, x)) for x in re.findall(r"StopTarget\((\d+),\s*(\d+)\)", m.group(1))] if m else []
-    return sched, days, combos, {"stop_days": [], "dom": [], "round": ""}
+    return sched, days, combos, {
+        "stop_days": [], "dom": [], "round": "",
+        "scheduled_combos": {"LONG": [], "SHORT": []},
+        "costs": "", "fill_model": "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -504,9 +517,13 @@ def section_A(rules):
     for k, lab in (("SELL", "SELL (SHORT)"), ("BUY", "BUY (LONG)")):
         tr = sum(v is not None for v in sched[k])
         rows.append([lab, f"{tr} ({tr / 2:.1f}h)", f"{48 - tr} ({(48 - tr) / 2:.1f}h)",
+                     ", ".join(f"{a}/{b}" for a, b in extras["scheduled_combos"].get(
+                         "LONG" if k == "BUY" else "SHORT", []))
+                     or ", ".join(f"{a}/{b}" for a, b in combos[k]),
                      ", ".join(f"{a}/{b}" for a, b in combos[k]),
                      ", ".join(days.get("LONG" if k == "BUY" else "SHORT", []))])
-    tbl = html_table(rows, ["Side", "Trading slots", "Avoid slots", "SL/TP combos", "Allowed days"])
+    tbl = html_table(rows, ["Side", "Trading slots", "Avoid slots", "Scheduled SL/TP", "Analysis SL/TP",
+                            "Allowed days"])
     ex = []
     sd = {}
     for side, stop, day in (r[:3] for r in extras["stop_days"] if len(r) >= 3):
@@ -518,6 +535,10 @@ def section_A(rules):
     note = f"<p class='note'>Days of month never traded: <b>{dom}</b>."
     if extras["round"]:
         note += f" Round-number filter: {html.escape(extras['round'])}."
+    if extras.get("costs"):
+        note += f" Costs: <code>{html.escape(extras['costs'])}</code>."
+    if extras.get("fill_model"):
+        note += f" Fill model: {html.escape(extras['fill_model'])}."
     note += "</p>"
     return f"<p class='legend'>{leg}</p>{fig_html(fig, 230)}{tbl}{fig_html(fig2, 200)}{tbl2}{note}"
 
