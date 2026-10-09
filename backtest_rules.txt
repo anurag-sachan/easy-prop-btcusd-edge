@@ -104,6 +104,9 @@ SHORT,220,1500
 ROUND_NUMBER_FILTER
 skip when a multiple of 500 lies between entry and SL (inclusive)
 
+RELATIVE_STRENGTH_FILTER
+source=net_r_buckets_0_59.csv,levels=30M_TOUCH_LEVEL+1H_ENTRY_LEVEL,minutes=0-59,reject_when_total_net_R<0
+
 RISK_MULTIPLIER_BY_ENTRY_TIME (IST)
 04:30-05:00,0.1
 12:00-12:30,0.1

@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 public class Main {
+    private static final Path NET_R_BUCKETS_FILE = Path.of("net_r_buckets_0_59.csv");
     private static final long ONE_MINUTE_MS = 60_000L;
     private static final long THIRTY_MINUTES_MS = 30 * ONE_MINUTE_MS;
     private static final long ONE_HOUR_MS = 60 * ONE_MINUTE_MS;
@@ -174,9 +175,10 @@ public class Main {
         }
 
         List<Signal> signals = buildSignals(candles30m, minuteCandles, hourlyOpen);
+        Map<RelativeStrengthKey, Double> predefinedStrength = loadPredefinedStrength();
         runGridSearch(signals, minuteCandles, rawLog);
         runRequestedCombinations(signals, minuteCandles, rawLog);
-        runScheduledBacktest(signals, minuteCandles, rawLog);
+        runScheduledBacktest(signals, minuteCandles, rawLog, predefinedStrength);
         Files.writeString(Path.of("raw_data_performance.log"), rawLog.toString(),
                 StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         writeRulesFile();
@@ -236,6 +238,8 @@ public class Main {
         appendScheduledCombinations(out, "SHORT", SELL_TIME_RULES);
 
         out.append("\nROUND_NUMBER_FILTER\nskip when a multiple of 500 lies between entry and SL (inclusive)\n");
+        out.append("\nRELATIVE_STRENGTH_FILTER\nsource=").append(NET_R_BUCKETS_FILE)
+           .append(",levels=30M_TOUCH_LEVEL+1H_ENTRY_LEVEL,minutes=0-59,reject_when_total_net_R<0\n");
         out.append("\nRISK_MULTIPLIER_BY_ENTRY_TIME (IST)\n");
         for (int slot : new TreeSet<>(REDUCED_RISK_TIME_SLOTS)) {
             out.append(halfHourLabel(slot)).append(',')
@@ -579,7 +583,9 @@ public class Main {
         return day == DayOfWeek.SATURDAY;
     }
 
-        private static void runScheduledBacktest(List<Signal> signals, List<Candle> candles, StringBuilder rawLog)
+        private static void runScheduledBacktest(List<Signal> signals, List<Candle> candles,
+                                                 StringBuilder rawLog,
+                                                 Map<RelativeStrengthKey, Double> predefinedStrength)
             throws IOException {
         List<ScheduledSignal> scheduledSignals = new ArrayList<>();
         int avoidedByHour = 0;
@@ -609,7 +615,6 @@ public class Main {
             }
         }
 
-        Map<StrengthKey, Double> highlightedStrength = buildHighlightedStrength(scheduledSignals, candles);
         int entries = 0;
         int wins = 0;
         int losses = 0;
@@ -635,12 +640,11 @@ public class Main {
                 continue;
             }
 
-            StrengthKey strengthKey = strengthKey(signal, candles, scheduled.rule);
-            double currentStrength = highlightedStrength.getOrDefault(strengthKey, 0.0);
-            // if (highlightedStrength.containsKey(strengthKey) && currentStrength < 0.0) {
-            //     rejectedByNegativeStrength++;
-            //     continue;
-            // }
+            double currentStrength = predefinedRelativeStrength(signal, candles, predefinedStrength);
+            if (currentStrength < 0.0) {
+                rejectedByNegativeStrength++;
+                continue;
+            }
 
             entries++;
             Exit exit = findExit(candles, signal,
@@ -844,59 +848,69 @@ public class Main {
         return time.getHour() * 2 + time.getMinute() / 30;
         }
 
-        private static StrengthKey strengthKey(Signal signal, List<Candle> candles,
-                                               EffectiveRule rule) {
-            ZonedDateTime touchTime = Instant.ofEpochMilli(
-                    candles.get(signal.touchIndex).timestamp).atZone(ZoneId.of("Asia/Kolkata"));
-            return new StrengthKey(signal.side, touchTime.getMinute(),
-                    rule.stopPoints, rule.targetPoints);
+        private static double predefinedRelativeStrength(
+                Signal signal, List<Candle> candles,
+                Map<RelativeStrengthKey, Double> predefinedStrength) {
+            int touchMinute = minuteOf(candles.get(signal.touchIndex).timestamp);
+            int entryMinute = minuteOf(candles.get(signal.entryIndex).timestamp);
+            return predefinedStrength.getOrDefault(
+                    new RelativeStrengthKey(signal.side, StrengthEvent.TOUCH, touchMinute), 0.0)
+                    + predefinedStrength.getOrDefault(
+                    new RelativeStrengthKey(signal.side, StrengthEvent.ENTRY, entryMinute), 0.0);
         }
 
-        /**
-         * Builds the historical pre-entry strength lookup from the unfiltered
-         * scheduled population. WIN/LOSS magnitudes are first compared with the
-         * same 2x rule used by the analyzer; the retained bucket stores WIN+LOSS.
-         */
-        private static Map<StrengthKey, Double> buildHighlightedStrength(
-                List<ScheduledSignal> scheduledSignals, List<Candle> candles) {
-            Map<StrengthOutcomeKey, Double> outcomeSums = new HashMap<>();
-            int nextAvailableIndex = -1;
-            for (ScheduledSignal scheduled : scheduledSignals) {
-                Signal signal = scheduled.signal;
-                if (signal.entryIndex <= nextAvailableIndex
-                        || isRoundNumberFiltered(signal, scheduled.rule.stopPoints)) {
-                    continue;
-                }
-                Exit exit = findExit(candles, signal,
-                        scheduled.rule.stopPoints, scheduled.rule.targetPoints);
-                nextAvailableIndex = exit == null ? candles.size() : exit.candleIndex;
-                if (exit == null) {
-                    continue;
-                }
-                StrengthKey bucket = strengthKey(signal, candles, scheduled.rule);
-                Result outcome = exit.win ? Result.WIN : Result.LOSS;
-                double netR = exit.pnlPoints / scheduled.rule.stopPoints
-                        * scheduled.riskMultiplier;
-                outcomeSums.merge(new StrengthOutcomeKey(bucket, outcome), netR, Double::sum);
+        private static int minuteOf(long timestamp) {
+            return Instant.ofEpochMilli(timestamp).atZone(ZoneId.of("Asia/Kolkata")).getMinute();
+        }
+
+        private static Map<RelativeStrengthKey, Double> loadPredefinedStrength() throws IOException {
+            List<String> lines = Files.readAllLines(NET_R_BUCKETS_FILE);
+            if (lines.isEmpty()) {
+                throw new IOException("Predefined strength file is empty: " + NET_R_BUCKETS_FILE);
+            }
+            String[] header = lines.get(0).split(",", -1);
+            if (header.length != 63 || !"LEVEL".equals(header[0])
+                    || !"SIDE".equals(header[1]) || !"RESULT".equals(header[2])) {
+                throw new IOException("Expected LEVEL,SIDE,RESULT and 60 minute buckets in "
+                        + NET_R_BUCKETS_FILE);
             }
 
-            Map<StrengthKey, Double> highlighted = new HashMap<>();
-            Map<StrengthKey, Double> allBuckets = new HashMap<>();
-            Set<StrengthKey> bucketKeys = new HashSet<>();
-            for (StrengthOutcomeKey key : outcomeSums.keySet()) {
-                bucketKeys.add(key.bucket);
-            }
-            for (StrengthKey bucket : bucketKeys) {
-                double win = outcomeSums.getOrDefault(
-                        new StrengthOutcomeKey(bucket, Result.WIN), 0.0);
-                double loss = outcomeSums.getOrDefault(
-                        new StrengthOutcomeKey(bucket, Result.LOSS), 0.0);
-                if (Math.abs(win) > 2.0 * Math.abs(loss)
-                        || Math.abs(loss) > 2.0 * Math.abs(win)) {
-                    allBuckets.put(bucket, win + loss);
+            Map<RelativeStrengthKey, double[]> outcomeSums = new HashMap<>();
+            for (int lineNumber = 1; lineNumber < lines.size(); lineNumber++) {
+                String[] columns = lines.get(lineNumber).split(",", -1);
+                if (columns.length != 63) {
+                    throw new IOException("Expected 63 columns at " + NET_R_BUCKETS_FILE
+                            + ":" + (lineNumber + 1));
+                }
+                StrengthEvent event;
+                try {
+                    event = StrengthEvent.fromLabel(columns[0]);
+                    Side side = Side.valueOf(columns[1]);
+                    Result result = Result.valueOf(columns[2]);
+                    int resultIndex = result == Result.WIN ? 0 : 1;
+                    for (int minute = 0; minute < 60; minute++) {
+                        double value = Double.parseDouble(columns[minute + 3]);
+                        RelativeStrengthKey minuteKey = new RelativeStrengthKey(side, event, minute);
+                        double[] minuteValues = outcomeSums.computeIfAbsent(
+                                minuteKey, ignored -> new double[2]);
+                        minuteValues[resultIndex] += value;
+                    }
+                } catch (IllegalArgumentException e) {
+                    throw new IOException("Invalid strength row at " + NET_R_BUCKETS_FILE
+                            + ":" + (lineNumber + 1), e);
                 }
             }
-            highlighted.putAll(allBuckets);
+
+            Map<RelativeStrengthKey, Double> highlighted = new HashMap<>();
+            for (Map.Entry<RelativeStrengthKey, double[]> entry : outcomeSums.entrySet()) {
+                double win = entry.getValue()[0];
+                double loss = entry.getValue()[1];
+                if (Math.abs(win) > 2.0 * Math.abs(loss)) {
+                    highlighted.put(entry.getKey(), win);
+                } else if (Math.abs(loss) > 2.0 * Math.abs(win)) {
+                    highlighted.put(entry.getKey(), loss);
+                }
+            }
             return highlighted;
         }
 
@@ -1124,16 +1138,30 @@ public class Main {
     private record Exit(int candleIndex, boolean win, double pnlPoints) {
     }
 
-    private record StrengthKey(Side side, int clockMinute,
-                               double stopPoints, double targetPoints) {
+    private enum StrengthEvent {
+        TOUCH("30M_TOUCH_LEVEL"),
+        ENTRY("1H_ENTRY_LEVEL");
+
+        private final String label;
+
+        StrengthEvent(String label) {
+            this.label = label;
+        }
+
+        private static StrengthEvent fromLabel(String label) {
+            for (StrengthEvent event : values()) {
+                if (event.label.equals(label)) return event;
+            }
+            throw new IllegalArgumentException("Unknown strength level: " + label);
+        }
+    }
+
+    private record RelativeStrengthKey(Side side, StrengthEvent event, int clockMinute) {
     }
 
     private enum Result {
         WIN,
         LOSS
-    }
-
-    private record StrengthOutcomeKey(StrengthKey bucket, Result outcome) {
     }
 
     private record Evaluation(Side side, int stopPoints, int targetPoints,

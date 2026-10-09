@@ -64,6 +64,7 @@ Allowed weekdays: Monday, Wednesday, Sunday. Friday and Saturday are also avoide
 - An unclosed position at the end of available data is counted as open; it contributes no realized points.
 - P&L is reported in raw price points, before commissions, funding, spread, and slippage.
 - In the scheduled strategy, entries from 04:30-05:00, 12:00-12:30, and 17:00-17:30 IST use 10% of the usual position risk. Stop and target price distances are unchanged; scheduled net_R and cumulative P&L apply the position-size multiplier. Exploratory grid and requested-combination analyses retain their existing sizing.
+- The scheduled strategy uses the predefined `net_r_buckets_0_59.csv` for its relative-strength filter. The CSV contains highlighted WIN/LOSS net_R values for the 0–59 clock-minute buckets at the 30-minute touch and 1-hour entry levels; the two applicable bucket values are added for each signal, and a negative total is rejected. The filter is not rebuilt from the current backtest.
 - Win rate is wins divided by closed trades. Expectancy is net realized points divided by entries, including any open entry in the denominator.
 - The exploratory grid constants are SL 70 to 370 in 50-point steps and TP 200 to 1,000 in 100-point steps. The specific combo comparison uses BUY 70/300 and 270/300, and SELL 70/400, 70/600, 70/800, and 220/800.
 
