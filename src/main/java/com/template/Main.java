@@ -637,10 +637,10 @@ public class Main {
 
             StrengthKey strengthKey = strengthKey(signal, candles, scheduled.rule);
             double currentStrength = highlightedStrength.getOrDefault(strengthKey, 0.0);
-            if (highlightedStrength.containsKey(strengthKey) && currentStrength < 0.0) {
-                rejectedByNegativeStrength++;
-                continue;
-            }
+            // if (highlightedStrength.containsKey(strengthKey) && currentStrength < 0.0) {
+            //     rejectedByNegativeStrength++;
+            //     continue;
+            // }
 
             entries++;
             Exit exit = findExit(candles, signal,
