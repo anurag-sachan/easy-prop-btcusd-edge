@@ -142,7 +142,7 @@ public class Main {
                 DayOfWeek.FRIDAY, DayOfWeek.SUNDAY)
             );
         // Calendar days of the month (IST entry date) on which no trade is taken.
-        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(10,14,15);
+        private static final Set<Integer> EXCLUDED_DAYS_OF_MONTH = Set.of(1,2,10,14,15);
 
     public static void main(String[] args) throws IOException {
         parseCostInputs(args);
